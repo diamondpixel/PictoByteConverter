@@ -1,4 +1,7 @@
-#include "headers/thread_safe_queue.h"
+#include "headers/ThreadSafeQueue.h"
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
 void ThreadSafeQueue::push(const ImageTask& task) {
     std::lock_guard<std::mutex> lock(mutex);

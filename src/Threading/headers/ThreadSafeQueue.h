@@ -4,7 +4,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-#include "image_task.h"
+#include <chrono>
+#include "../../Image/headers/ImageTask.h"
 
 /**
  * Thread-safe queue implementation for image processing tasks
