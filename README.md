@@ -32,19 +32,19 @@ Options:
 To convert a binary file to BMP image(s):
 
 ```bash
-ConvertToImage --mode=0 --input=MyFile.wav --output=MyFile.bmp
+ConvertToImage --mode=0 --input=MyFile.wav --output=MyFile
 ```
 
 By default, the converter will chunk files larger than 9MB into multiple images, with each image having a maximum size of 9MB. The output BMP files will be named as follows:
-- `MyFile.bmp.bmp` (for single file output)
-- `MyFile.bmp_1of3.bmp`, `MyFile.bmp_2of3.bmp`, `MyFile.bmp_3of3.bmp` (for multi-file output)
+- `MyFile.bmp` (for single file output)
+- `MyFile_1of3.bmp`, `MyFile_2of3.bmp`, `MyFile_3of3.bmp` (for multi-file output)
 
 ### Extracting a File from Image(s)
 
 To extract the original file from BMP image(s):
 
 ```bash
-ConvertToImage --mode=1 --input=MyFile.bmp_1of3.bmp --output=OutputDirectory
+ConvertToImage --mode=1 --input=MyFile_1of3.bmp --output=OutputDirectory
 ```
 
 The program will automatically:
@@ -68,7 +68,7 @@ PictoByteConverter encodes binary data into the RGB values of BMP image pixels. 
 ### Encoding a Large Audio File
 
 ```bash
-ConvertToImage --mode=0 --input=EnchantedWaterfall.wav --output=EnchantedWaterfall.bmp
+ConvertToImage --mode=0 --input=EnchantedWaterfall.wav --output=EnchantedWaterfall
 ```
 
 Result:
@@ -77,23 +77,23 @@ Converting file to image...
 Input: EnchantedWaterfall.wav, Output: EnchantedWaterfall.bmp
 Input file size: 36857678 bytes
 Splitting file into 4 chunks of approximately 9216 KB each
-Saved image: EnchantedWaterfall.bmp_1of4.bmp
-Saved image: EnchantedWaterfall.bmp_2of4.bmp
-Saved image: EnchantedWaterfall.bmp_3of4.bmp
-Saved image: EnchantedWaterfall.bmp_4of4.bmp
+Saved image: EnchantedWaterfall_1of4.bmp
+Saved image: EnchantedWaterfall_2of4.bmp
+Saved image: EnchantedWaterfall_3of4.bmp
+Saved image: EnchantedWaterfall_4of4.bmp
 Conversion completed successfully
 ```
 
 ### Decoding from Images
 
 ```bash
-ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp_1of4.bmp --output=D:\Restored
+ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp --output=D:\Restored
 ```
 
 Result:
 ```
 Extracting file from image...
-Input image: EnchantedWaterfall.bmp_1of4.bmp
+Input image: EnchantedWaterfall.bmp
 Detected multi-part file:
   Base name: EnchantedWaterfall.bmp
   Chunk index: 1 of 4
