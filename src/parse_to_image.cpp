@@ -23,48 +23,45 @@ void printMessage(const std::string &message) {
 }
 
 // Function to calculate optimal rectangular dimensions based on aspect ratio
-std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t data_bytes, size_t bytes_per_pixel, size_t bmp_header_size,
-                                  size_t max_size_bytes, float aspect_ratio = 1.0f) {
-    // Calculate total number of pixels needed
-    size_t total_pixels = (data_bytes + bytes_per_pixel - 1) / bytes_per_pixel;
+std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t bmp_header_size,
+                                                         size_t max_size_bytes, float aspect_ratio = 1.0f) {
+    // Total pixels needed for header + file data
+    size_t total_pixels = (total_bytes + bytes_per_pixel - 1) / bytes_per_pixel;
 
-    // Calculate width and height based on aspect ratio
-    auto width = static_cast<size_t>(std::sqrt(static_cast<double>(total_pixels * aspect_ratio)));
-    auto height = static_cast<size_t>(width / aspect_ratio);
+    // Calculate initial width and height based on aspect ratio
+    size_t width = static_cast<size_t>(std::sqrt(static_cast<double>(total_pixels * aspect_ratio)));
+    size_t height = static_cast<size_t>(width / aspect_ratio);
 
-    // Ensure width and height multiply to have enough pixels
+    // Ensure enough pixels
     while (width * height < total_pixels) {
         width++;
         height = static_cast<size_t>(width / aspect_ratio);
     }
 
-    // Ensure minimum dimensions (but not too small)
-    size_t min_dimension = 64; // Larger minimum to avoid tiny dimensions
+    // Set minimum dimensions to avoid tiny images
+    size_t min_dimension = 64; // Increased from 16 to ensure capacity
     if (width < min_dimension) width = min_dimension;
     if (height < min_dimension) height = min_dimension;
 
-    // Limit dimensions to reasonable values
+    // Cap at BMP max dimensions (65,535 x 65,535)
     if (width > 65535) width = 65535;
     if (height > 65535) height = 65535;
 
-    // Calculate row padding (BMP rows must be aligned to 4 bytes)
+    // Calculate actual file size with row padding
     size_t row_bytes = width * bytes_per_pixel;
-    size_t padding = (4 - (row_bytes % 4)) % 4;
+    size_t padding = (4 - (row_bytes % 4)) % 4; // BMP rows pad to multiple of 4
+    size_t actual_image_size = bmp_header_size + (height * (row_bytes + padding));
 
-    // Calculate actual bytes capacity including padding
-    size_t actual_image_size = bmp_header_size + (height * (width * bytes_per_pixel + padding));
-
-    // If we're exceeding the limit, reduce dimensions
-    while (actual_image_size > max_size_bytes) {
+    // Shrink dimensions if over max_size_bytes
+    while (actual_image_size > max_size_bytes && width > min_dimension && height > min_dimension) {
         if (width > height) {
             width--;
         } else {
             height--;
         }
-
         row_bytes = width * bytes_per_pixel;
         padding = (4 - (row_bytes % 4)) % 4;
-        actual_image_size = bmp_header_size + (height * (width * bytes_per_pixel + padding));
+        actual_image_size = bmp_header_size + (height * (row_bytes + padding));
     }
 
     return {width, height};
@@ -130,42 +127,67 @@ std::vector<unsigned char> readFileSegment(std::ifstream &file, size_t position,
     return data;
 }
 
-// Function to create header data for the image
-void createImageHeader(VectorWrapper<unsigned char> &image_data, const std::string &filename,
+void createImageHeader(VectorWrapper<unsigned char> &image_data, const std::string &original_filename,
                        size_t actual_size, size_t img_index, size_t total_images) {
-    // Add filename to image data
-    for (unsigned char character: filename) {
-        image_data.push_back(character);
-    }
-    image_data.push_back('#');
+    // Calculate header components
+    size_t filename_length = original_filename.size();
+    std::string data_size_str = std::format("{:010d}", actual_size); // Requires C++20, else use snprintf
+    std::string current_chunk_str = std::format("{:04d}", img_index + 1);
+    std::string total_chunks_str = std::format("{:04d}", total_images);
 
-    // Add file size (10 digits)
-    char buffer_size[21];
-    snprintf(buffer_size, sizeof(buffer_size), "%010zu", actual_size);
-    for (size_t i = 0; i < 10; ++i) {
-        image_data.push_back(buffer_size[i]);
-    }
-    image_data.push_back('#');
+    // Calculate header data size (excluding the 3-byte length field and padding)
+    size_t header_data_size = 2 + filename_length + 10 + 4 + 4; // filename_length + filename + data_size + current_chunk + total_chunks
 
-    // Add image index and total count (X of Y format)
-    char index_info[11];
-    snprintf(index_info, sizeof(index_info), "%04zu-%04zu", img_index + 1, total_images);
-    for (size_t i = 0; i < 10 && index_info[i] != '\0'; ++i) {
-        image_data.push_back(index_info[i]);
+    // Calculate padding to make total header length a multiple of 3
+    size_t total_header_size_without_padding = 3 + header_data_size;
+    size_t pad_needed = (3 - (total_header_size_without_padding % 3)) % 3;
+    size_t total_header_size = total_header_size_without_padding + pad_needed;
+
+    // Write total header length (3 bytes)
+    image_data.push_back(static_cast<unsigned char>((total_header_size >> 16) & 0xFF));
+    image_data.push_back(static_cast<unsigned char>((total_header_size >> 8) & 0xFF));
+    image_data.push_back(static_cast<unsigned char>(total_header_size & 0xFF));
+
+    // Write filename length (2 bytes)
+    image_data.push_back(static_cast<unsigned char>((filename_length >> 8) & 0xFF));
+    image_data.push_back(static_cast<unsigned char>(filename_length & 0xFF));
+
+    // Write filename
+    for (char c : original_filename) {
+        image_data.push_back(static_cast<unsigned char>(c));
     }
-    image_data.push_back('#');
+
+    // Write data_size (10 bytes)
+    for (char c : data_size_str) {
+        image_data.push_back(static_cast<unsigned char>(c));
+    }
+
+    // Write current_chunk (4 bytes)
+    for (char c : current_chunk_str) {
+        image_data.push_back(static_cast<unsigned char>(c));
+    }
+
+    // Write total_chunks (4 bytes)
+    for (char c : total_chunks_str) {
+        image_data.push_back(static_cast<unsigned char>(c));
+    }
+
+    // Add padding
+    for (size_t i = 0; i < pad_needed; ++i) {
+        image_data.push_back('\0');
+    }
 }
 
-// Modified processImageTask function for the last image
+// Modified processImageTask function to maintain consistent headers
 void processImageTask(const ImageTask &task, std::ifstream &file, size_t bytes_per_pixel,
                       size_t bmp_header_size, size_t max_size_bytes, size_t header_size, float aspect_ratio = 1.0f) {
-    // Create output filename
+    // Create output filename for the image file (.bmp extension)
     std::string current_outfile;
     if (task.total_images > 1) {
         current_outfile = task.base_outfile + "_" + std::to_string(task.img_index + 1) + "of" +
-                          std::to_string(task.total_images) + task.extension;
+                          std::to_string(task.total_images) + ".bmp";
     } else {
-        current_outfile = task.base_outfile + task.extension;
+        current_outfile = task.base_outfile + ".bmp";
     }
 
     // Read data from file
@@ -176,14 +198,42 @@ void processImageTask(const ImageTask &task, std::ifstream &file, size_t bytes_p
     VectorWrapper<unsigned char> image_data;
     image_data.reserve(header_size + file_data.size());
 
-    // Add header information
-    createImageHeader(image_data, task.filename, actual_size, task.img_index, task.total_images);
+    // Extract the original filename and extension from task.filename
+    std::string original_filename = task.filename;
+    std::string original_base;
+    std::string original_extension;
 
-    // Add file data
+    // Extract original extension
+    auto dot_pos = original_filename.find_last_of('.');
+    if (dot_pos != std::string::npos) {
+        original_extension = original_filename.substr(dot_pos);
+        original_base = original_filename.substr(0, dot_pos);
+    } else {
+        original_base = original_filename;
+        original_extension = "";
+    }
+
+    // For the header, use original base name + original extension
+    std::string header_filename = task.base_outfile + original_extension;
+
+    // Add header information with original extension
+    createImageHeader(image_data, header_filename, actual_size, task.img_index, task.total_images);
+
+    // Append file data after the header
     for (unsigned char byte: file_data) {
         image_data.push_back(byte);
     }
 
+    // Ensure the total image_data length is a multiple of 3 bytes
+    size_t remainder = image_data.size() % 3;
+    if (remainder != 0) {
+        size_t pad = 3 - remainder;
+        for (size_t i = 0; i < pad; ++i) {
+            image_data.push_back(0); // Use 0 as a padding byte
+        }
+    }
+
+    // The rest of the function remains unchanged...
     // Default to the task dimensions
     size_t current_width = task.width;
     size_t current_height = task.height;
@@ -259,7 +309,7 @@ void processImageTask(const ImageTask &task, std::ifstream &file, size_t bytes_p
     // Calculate actual data usage ratio
     double usage_ratio = static_cast<double>(data_pixels) / static_cast<double>(total_pixels) * 100.0;
 
-    // Save image and report success
+    // Save image with .bmp extension
     if (image.save_image(current_outfile)) {
         // Get actual file size after saving
         std::ifstream check_file(current_outfile, std::ios::binary | std::ios::ate);
@@ -269,6 +319,8 @@ void processImageTask(const ImageTask &task, std::ifstream &file, size_t bytes_p
         std::stringstream ss;
         ss << "Created image " << (task.img_index + 1) << " of " << task.total_images << ": "
                 << current_outfile << std::endl
+                << "  Original file: " << task.filename << std::endl
+                << "  Header uses extension: " << original_extension << std::endl
                 << "  Dimensions: " << current_width << "x" << current_height << std::endl
                 << "  Stored " << actual_size << " bytes of data" << std::endl
                 << "  Image pixel usage: " << usage_ratio << "%" << std::endl
@@ -386,12 +438,11 @@ void parseToImage(const std::string &filename, const std::string &outfile, size_
 
     // Extract base filename and extension
     std::string base_outfile = outfile;
-    std::string extension;
+    std::string extension = ".bmp";
 
-    // Extract extension
+    // Remove any existing extension from the output filename
     auto dot_pos = base_outfile.find_last_of('.');
     if (dot_pos != std::string::npos) {
-        extension = base_outfile.substr(dot_pos);
         base_outfile = base_outfile.substr(0, dot_pos);
     }
 
@@ -418,7 +469,7 @@ void parseToImage(const std::string &filename, const std::string &outfile, size_
             .file_position = static_cast<std::streampos>(img_index * bytes_capacity),
             .base_outfile = base_outfile,
             .extension = extension,
-            .filename = filename
+            .filename = filename  // Store the original filename with extension
         };
 
         tasks.push(task);
