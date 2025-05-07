@@ -9,6 +9,7 @@
 # ...and not the src directory...
 !src/
 !src/**
+!src/Debug/Debug.cpp
 
 # Exclude compiled output even in src
 **/*.o
@@ -25,7 +26,6 @@
 **/.vs/
 **/.vscode/
 **/build/
-**/Debug/
 **/Release/
 **/x64/
 **/x86/
