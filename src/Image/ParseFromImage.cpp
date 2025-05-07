@@ -66,7 +66,7 @@ namespace image_parser {
 
     // Ensure total_header_length is exactly 48 bytes
     if (total_header_length != 48) {
-        std::lock_guard<std::mutex> lock(print_mutex);
+        std::lock_guard lock(print_mutex);
         printWarning("Header length is " + std::to_string(total_header_length) +
                     " bytes, expected 48 bytes in " + filename);
         // We continue anyway but this is a potential issue
@@ -162,11 +162,6 @@ namespace image_parser {
                 data.push_back(rgb.blue);
             }
         }
-
-        // Don't print for each pixel extraction unless in full debug mode
-        // printMessage("Extracted " + std::to_string(data.size()) + " bytes of pixel data (" + 
-        //            std::to_string(data.size() / 3) + " pixels) out of " + 
-        //            std::to_string(total_pixels) + " total pixels");
         
         return data;
     }
