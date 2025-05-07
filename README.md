@@ -14,17 +14,22 @@ PictoByteConverter is a versatile tool designed to convert any binary file into 
 - **Seamless Chunked File Handling** - Automatically detects and processes all related chunks
 - **Metadata Preservation** - Embeds original filename and file structure in the image metadata
 - **Multi-threaded Processing** - Utilizes parallel processing for optimal performance
+- **Resource Management** - Controls memory usage and thread count to prevent system overload
+- **Customizable Chunk Size** - Adjust chunk size for optimal performance on different systems
 
 ## Usage
 
 ```
 Usage: ConvertToImage [options]
 Options:
-  --debug           Enable debug output mode
-  --mode=<mode>     Select operation mode (0: File to Image, 1: Image to File)
-  --input=<file>    Specify input file
-  --output=<file>   Specify output file
-  --help            Display this help message
+  --debug            Enable debug output mode
+  --mode=<mode>      Select operation mode (0: File to Image, 1: Image to File)
+  --input=<file>     Specify input file
+  --output=<file>    Specify output file
+  --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)
+  --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)
+  --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)
+  --help             Display this help message
 ```
 
 ### Converting a File to Image
@@ -35,7 +40,7 @@ To convert a binary file to BMP image(s):
 ConvertToImage --mode=0 --input=MyFile.wav --output=MyFile.bmp
 ```
 
-By default, the converter will chunk files larger than 9MB into multiple images, with each image having a maximum size of 9MB. The output BMP files will be named as follows:
+By default, the converter will chunk files larger than 9MB into multiple images, with each image having a maximum size of 9MB. You can adjust this with the `--maxChunkSize` parameter. The output BMP files will be named as follows:
 - `MyFile.bmp.bmp` (for single file output)
 - `MyFile.bmp_1of3.bmp`, `MyFile.bmp_2of3.bmp`, `MyFile.bmp_3of3.bmp` (for multi-file output)
 
@@ -62,42 +67,44 @@ PictoByteConverter encodes binary data into the RGB values of BMP image pixels. 
 2. Parallel processing for efficient conversion
 3. Built-in error detection and recovery
 4. Automatic directory creation and file management
+5. Advanced resource management to prevent memory issues with large files
 
 ## Examples
 
 ### Encoding a Large Audio File
 
 ```bash
-ConvertToImage --mode=0 --input=EnchantedWaterfall.wav --output=EnchantedWaterfall.bmp
+ConvertToImage --mode=0 --input=EnchantedWaterfall.wav --output=EnchantedWaterfall.bmp --maxCPU=4 --maxMemory=2048 --maxChunkSize=12
 ```
 
 Result:
 ```
 Converting file to image...
 Input: EnchantedWaterfall.wav, Output: EnchantedWaterfall.bmp
+Resource limits: 4 threads, 2048 MB memory, 12 MB max chunk size
 Input file size: 36857678 bytes
-Splitting file into 4 chunks of approximately 9216 KB each
-Saved image: EnchantedWaterfall.bmp_1of4.bmp
-Saved image: EnchantedWaterfall.bmp_2of4.bmp
-Saved image: EnchantedWaterfall.bmp_3of4.bmp
-Saved image: EnchantedWaterfall.bmp_4of4.bmp
+Splitting file into 3 chunks of approximately 12288 KB each
+Saved image: EnchantedWaterfall.bmp_1of3.bmp
+Saved image: EnchantedWaterfall.bmp_2of3.bmp
+Saved image: EnchantedWaterfall.bmp_3of3.bmp
 Conversion completed successfully
 ```
 
 ### Decoding from Images
 
 ```bash
-ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp_1of4.bmp --output=D:\Restored
+ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp_1of3.bmp --output=D:\Restored --maxCPU=2 --maxMemory=1024
 ```
 
 Result:
 ```
 Extracting file from image...
-Input image: EnchantedWaterfall.bmp_1of4.bmp
+Input image: EnchantedWaterfall.bmp_1of3.bmp
+Resource limits: 2 threads, 1024 MB memory
 Detected multi-part file:
   Base name: EnchantedWaterfall.bmp
-  Chunk index: 1 of 4
-Found 4 chunk files
+  Chunk index: 1 of 3
+Found 3 chunk files
 Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
 ```
 
@@ -106,6 +113,7 @@ Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
 - Written in modern C++ with filesystem and multithreading support
 - BMP image format chosen for its simplicity and wide compatibility
 - Careful handling of data integrity with size validation
+- Advanced resource management to prevent memory issues with large files
 
 ## Building from Source
 
@@ -152,6 +160,7 @@ The project is organized as follows:
   - `Image/` - Image processing functionality
     - `ParseToImage.cpp` - File to image conversion
     - `ParseFromImage.cpp` - Image to file extraction
+    - `ResourceManager.h` - Resource management (memory and threads)
     - `headers/` - Header files
   - `Debug/` - Debug utilities
 

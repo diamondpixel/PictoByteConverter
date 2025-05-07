@@ -1,0 +1,41 @@
+# Ignore everything
+*
+
+# But not these files...
+!.gitignore
+!README.md
+!CMakeLists.txt
+
+# ...and not the src directory...
+!src/
+!src/**
+
+# Exclude compiled output even in src
+**/*.o
+**/*.obj
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.a
+**/*.lib
+**/*.out
+
+# Exclude IDE and build directories
+**/.vs/
+**/.vscode/
+**/build/
+**/Debug/
+**/Release/
+**/x64/
+**/x86/
+**/bin/
+**/obj/
+**/CMakeFiles/
+
+# Exclude common temporary files
+**/*.log
+**/*.tmp
+**/*.temp
+**/.DS_Store
+**/Thumbs.db
