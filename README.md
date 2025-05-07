@@ -1,6 +1,6 @@
 # PictoByteConverter
 
-A powerful and efficient utility for converting binary files to BMP images and back.
+A powerful and efficient utility for converting binary files to BMP images and back, available both as a command-line tool and a library.
 
 ## Overview
 
@@ -16,8 +16,9 @@ PictoByteConverter is a versatile tool designed to convert any binary file into 
 - **Multi-threaded Processing** - Utilizes parallel processing for optimal performance
 - **Resource Management** - Controls memory usage and thread count to prevent system overload
 - **Customizable Chunk Size** - Adjust chunk size for optimal performance on different systems
+- **Library Integration** - Use as a library in your own applications via the C++ API
 
-## Usage
+## Command-Line Usage
 
 ```
 Usage: ConvertToImage [options]
@@ -58,6 +59,104 @@ The program will automatically:
 3. Process them in the correct order
 4. Reconstruct the original file with its original filename
 5. Place it in the specified output directory
+
+## Library API Usage
+
+PictoByteConverter can also be used as a library in your own applications. The API provides straightforward functions for conversion operations.
+
+### Linking with Your Project
+
+#### Using CMake:
+
+```cmake
+find_package(PictoByteConverter REQUIRED)
+target_link_libraries(YourApp PRIVATE PictoByteConverter::pictobyte)
+```
+
+#### Using Visual Studio:
+
+1. Add the include directory to your project
+2. Link against `pictobyte.lib`
+3. Ensure `pictobyte.dll` is in your application's path at runtime
+
+### API Functions
+
+The library provides the following key functions:
+
+```cpp
+#include <PictoByteConverter.h>
+
+// Convert a file to an image
+bool FileToImage(
+    const std::string& inputFilePath,
+    const std::string& outputFilePath,
+    int maxThreads = 0,
+    int maxMemoryMB = 1024,
+    int maxChunkSizeMB = 9,
+    bool debugMode = false
+);
+
+// Extract a file from an image
+bool ImageToFile(
+    const std::string& inputFilePath,
+    const std::string& outputDirectory,
+    int maxThreads = 0,
+    int maxMemoryMB = 1024,
+    bool debugMode = false
+);
+
+// Configure logging
+void SetLogCallback(void (*callback)(const char* message));
+
+// Get library version
+std::string GetLibraryVersion();
+```
+
+### Example Library Usage
+
+```cpp
+#include <PictoByteConverter.h>
+#include <iostream>
+
+// Custom logging function
+void LogHandler(const char* message) {
+    std::cout << "PictoByteConverter: " << message << std::endl;
+}
+
+int main() {
+    // Set up logging
+    SetLogCallback(LogHandler);
+    
+    // Convert a file to image
+    bool success = FileToImage(
+        "document.pdf",
+        "document",
+        4,              // Use 4 threads
+        2048,           // Use up to 2GB of memory
+        12,             // 12MB max chunk size
+        true            // Enable debug mode
+    );
+    
+    if (success) {
+        std::cout << "Conversion successful!" << std::endl;
+        
+        // Extract the file back
+        success = ImageToFile(
+            "document.bmp",
+            "output_folder",
+            4,           // Use 4 threads
+            2048,        // Use up to 2GB of memory
+            true         // Enable debug mode
+        );
+        
+        if (success) {
+            std::cout << "Extraction successful!" << std::endl;
+        }
+    }
+    
+    return 0;
+}
+```
 
 ## How It Works
 
@@ -147,7 +246,10 @@ Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
    cmake --build . --config Release
    ```
 
-The executable will be located in the `build/Release` directory (Windows) or `build` directory (Linux/macOS).
+The built files will be located in:
+- Executable: `cmake-build-release/build/ConvertToImage.exe`
+- Library: `cmake-build-release/build/pictobyte.dll` and `pictobyte.lib` (Windows)
+- Library: `cmake-build-release/build/libpictobyte.so` (Linux) or `libpictobyte.dylib` (macOS)
 
 ## Implementation Details
 
@@ -156,7 +258,10 @@ The executable will be located in the `build/Release` directory (Windows) or `bu
 The project is organized as follows:
 
 - `src/` - Source code files
-  - `Main.cpp` - Program entry point, argument handling
+  - `main.cpp` - Program entry point for command-line functionality
+  - `API/` - Library API implementation
+    - `headers/` - Public API headers
+    - `PictoByteConverter.cpp` - API implementation
   - `Image/` - Image processing functionality
     - `ParseToImage.cpp` - File to image conversion
     - `ParseFromImage.cpp` - Image to file extraction
@@ -176,4 +281,4 @@ This metadata ensures proper reconstruction of the original file.
 
 ## License
 
-This project is licensed under the MIT License
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.

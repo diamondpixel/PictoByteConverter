@@ -4,6 +4,7 @@
 # But not these files...
 !.gitignore
 !README.md
+!LICENSE.md
 !CMakeLists.txt
 
 # ...and not the src directory...
