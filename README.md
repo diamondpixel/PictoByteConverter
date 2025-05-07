@@ -183,22 +183,22 @@ Input: EnchantedWaterfall.wav, Output: EnchantedWaterfall.bmp
 Resource limits: 4 threads, 2048 MB memory, 12 MB max chunk size
 Input file size: 36857678 bytes
 Splitting file into 3 chunks of approximately 12288 KB each
-Saved image: EnchantedWaterfall.bmp_1of3.bmp
-Saved image: EnchantedWaterfall.bmp_2of3.bmp
-Saved image: EnchantedWaterfall.bmp_3of3.bmp
+Saved image: EnchantedWaterfall_1of3.bmp
+Saved image: EnchantedWaterfall_2of3.bmp
+Saved image: EnchantedWaterfall_3of3.bmp
 Conversion completed successfully
 ```
 
 ### Decoding from Images
 
 ```bash
-ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp_1of3.bmp --output=D:\Restored --maxCPU=2 --maxMemory=1024
+ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp --output=D:\Restored --maxCPU=2 --maxMemory=1024
 ```
 
 Result:
 ```
 Extracting file from image...
-Input image: EnchantedWaterfall.bmp_1of3.bmp
+Input image: EnchantedWaterfall_1of3.bmp
 Resource limits: 2 threads, 1024 MB memory
 Detected multi-part file:
   Base name: EnchantedWaterfall.bmp
