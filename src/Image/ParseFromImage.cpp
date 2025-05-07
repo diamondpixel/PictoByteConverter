@@ -138,9 +138,10 @@ namespace image_parser {
      * Extract pixel data from the image
      *
      * @param image The bitmap image to process
+     * @param pre_allocated_size Size that's already been allocated for this image (pass 0 if none)
      * @return Vector containing the extracted pixel data
      */
-    std::vector<unsigned char> extractPixelData(const bitmap_image &image) {
+    std::vector<unsigned char> extractPixelData(const bitmap_image &image, size_t pre_allocated_size = 0) {
         unsigned int width = image.width();
         unsigned int height = image.height();
 
@@ -148,22 +149,7 @@ namespace image_parser {
         size_t total_pixels = static_cast<size_t>(width) * static_cast<size_t>(height);
         size_t data_size_estimate = total_pixels * 3; // 3 bytes per pixel (RGB)
 
-        // Request memory allocation from ResourceManager
-        auto& resManager = ResourceManager::getInstance();
-        bool memory_allocated = resManager.allocateMemory(data_size_estimate);
-
-        if (!memory_allocated) {
-            printWarning("Memory allocation for " + std::to_string(data_size_estimate / (1024 * 1024)) +
-                         " MB failed, will try to use less memory");
-            // We'll still try to create the vector but with a smaller initial capacity
-            data_size_estimate = std::min(data_size_estimate, resManager.getMaxMemory() / 2);
-            memory_allocated = resManager.allocateMemory(data_size_estimate);
-            if (!memory_allocated) {
-                printError("Could not allocate memory for pixel data");
-                return std::vector<unsigned char>();
-            }
-        }
-
+        // We now rely on pre-allocated memory from the global pool
         std::vector<unsigned char> data;
         data.reserve(data_size_estimate); // Use allocated size
 
@@ -177,11 +163,11 @@ namespace image_parser {
             }
         }
 
-        // If we used less memory than allocated, release the excess
-        if (data.size() < data_size_estimate) {
-            resManager.freeMemory(data_size_estimate - data.size());
-        }
-
+        // Don't print for each pixel extraction unless in full debug mode
+        // printMessage("Extracted " + std::to_string(data.size()) + " bytes of pixel data (" + 
+        //            std::to_string(data.size() / 3) + " pixels) out of " + 
+        //            std::to_string(total_pixels) + " total pixels");
+        
         return data;
     }
 
@@ -196,119 +182,107 @@ namespace image_parser {
         const std::string &filename,
         std::mutex &print_mutex,
         bool debug_mode)
-{
-    try {
-        // IMPORTANT: Force debug mode check at thread entry point
-        bool mainDebugMode = debug_mode;
-        
-        // Load the image file
-        bitmap_image image(filename);
-
-        if (!image) {
-            // Use the printError function which handles locking internally
-            printError("Failed to load image " + filename);
-            return std::nullopt;
-        }
-
-        // Get image dimensions
-        unsigned int width = image.width();
-        unsigned int height = image.height();
-
-        // Request memory for image processing based on dimensions
-        auto& resManager = ResourceManager::getInstance();
-        size_t estimated_memory = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
-        bool memory_allocated = resManager.allocateMemory(estimated_memory);
-
-        if (!memory_allocated) {
-            // Use the printError function which handles locking internally
-            printError("Not enough memory to process image: " + filename);
-            return std::nullopt;
-        }
-
-        // Extract all pixel data from the image
-        std::vector<unsigned char> data = extractPixelData(image);
-        if (data.empty()) {
-            // Free the allocated memory if pixel extraction failed
-            resManager.freeMemory(estimated_memory);
-            return std::nullopt;
-        }
-
-        // Use the printMessage function which handles locking internally
-        printMessage("Processing image: " + filename +
-                    " (" + std::to_string(width) + "x" + std::to_string(height) + ") - Estimated capacity: " +
-                    std::to_string(data.size()) + " bytes");
-
-        // Start reading from the beginning of the data
-        auto data_iter = data.begin();
-
-        // Extract metadata from image header
-        auto [metadata, success] = extractMetadata(data, data_iter, print_mutex, filename);
-        if (!success) {
-            return std::nullopt;
-        }
-
-        // Print metadata info
-        {
-            // Use the printStats function which handles locking internally
-            std::string metadataInfo = "Extracted metadata:\n"
-                                      "  Output file: " + metadata.outputFilename + 
-                                      "\n  Data size: " + std::to_string(metadata.expectedDataSize) + " bytes" +
-                                      "\n  Index info: " + metadata.indexInfo +
-                                      ((metadata.currentChunk != -1 && metadata.totalChunks != -1) ?
-                                      " (Chunk " + std::to_string(metadata.currentChunk) + " of " +
-                                      std::to_string(metadata.totalChunks) + ")" : "");
+    {
+        try {
+            // IMPORTANT: Force debug mode check at thread entry point
+            bool mainDebugMode = debug_mode;
             
-            printStats(metadataInfo);
-        }
+            // Load the image file
+            bitmap_image image(filename);
 
-        // Calculate the distance from data_iter to data.end()
-        size_t available_data = std::distance(data_iter, data.end());
-
-        // IMPORTANT: Use exactly metadata.expectedDataSize instead of limiting by available data
-        // This ensures we preserve the exact size recorded in the header
-        size_t payload_size = metadata.expectedDataSize;
-
-        // Warn if there's not enough data available
-        if (available_data < payload_size) {
-            // Use the printWarning function which handles locking internally
-            printWarning("Available data (" + std::to_string(available_data) +
-                       " bytes) is less than expected size (" +
-                       std::to_string(payload_size) + " bytes) in chunk " +
-                       std::to_string(metadata.currentChunk));
-
-            // We continue extracting what we can, but we record the expected size separately
-            payload_size = available_data;
-        }
-
-        // Create payload result
-        image_parser::ChunkInfo chunk;
-        chunk.chunkIndex = metadata.currentChunk;
-        chunk.totalChunks = metadata.totalChunks;
-        chunk.chunkSize = payload_size;
-        chunk.expectedDataSize = metadata.expectedDataSize; // Store the expected size
-        chunk.filename = metadata.outputFilename;
-
-        // Copy the payload data (excluding header)
-        chunk.payload.reserve(payload_size);
-        for (size_t i = 0; i < payload_size; ++i) {
-            if (data_iter == data.end()) {
-                break;
+            if (!image) {
+                // Use the printError function which handles locking internally
+                printError("Failed to load image " + filename);
+                return std::nullopt;
             }
-            chunk.payload.push_back(*data_iter);
-            ++data_iter;
-        }
-        // Use the printMessage function which handles locking internally
-        printMessage("Extracted " + std::to_string(chunk.payload.size()) + " bytes of payload data from " + filename);
 
-        // Free memory used for image processing before returning
-        resManager.freeMemory(estimated_memory);
-        return chunk;
-    } catch (const std::exception &e) {
-        // Use the printError function which handles locking internally
-        printError("Exception processing " + filename + ": " + e.what());
-        return std::nullopt;
+            // Get image dimensions
+            unsigned int width = image.width();
+            unsigned int height = image.height();
+
+            // Extract all pixel data from the image - now always using global memory
+            std::vector<unsigned char> data = extractPixelData(image, 0);
+            if (data.empty()) {
+                return std::nullopt;
+            }
+
+            // Use the printMessage function which handles locking internally
+            printFilePath("Processing: " + filename);
+            // printMessage("Processing image: " + filename +
+            //             " (" + std::to_string(width) + "x" + std::to_string(height) + ") - Extracted data size: " +
+            //             std::to_string(data.size()) + " bytes");
+
+            // Start reading from the beginning of the data
+            auto data_iter = data.begin();
+
+            // Extract metadata from image header
+            auto [metadata, success] = extractMetadata(data, data_iter, print_mutex, filename);
+            if (!success) {
+                return std::nullopt;
+            }
+
+            // Print metadata info directly here to ensure it's visible
+            std::lock_guard<std::mutex> lock(print_mutex);
+            std::cout << ANSIColorConst::CYAN << "=== Extracted metadata ===" << ANSIColorConst::RESET << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Output file:" << ANSIColorConst::RESET << " " << metadata.outputFilename << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Data size:" << ANSIColorConst::RESET << " " 
+                     << ANSIColorConst::BRIGHT_YELLOW << metadata.expectedDataSize << ANSIColorConst::RESET << " bytes" << std::endl;
+            
+            if (metadata.currentChunk != -1 && metadata.totalChunks != -1) {
+                std::cout << "  " << ANSIColorConst::GREEN << "Index info:" << ANSIColorConst::RESET << " " << metadata.indexInfo 
+                        << " (Chunk " << ANSIColorConst::BRIGHT_YELLOW << metadata.currentChunk << ANSIColorConst::RESET << " of "
+                        << ANSIColorConst::BRIGHT_YELLOW << metadata.totalChunks << ANSIColorConst::RESET << ")" << std::endl;
+            } else if (!metadata.indexInfo.empty()) {
+                std::cout << "  " << ANSIColorConst::GREEN << "Index info:" << ANSIColorConst::RESET << " " << metadata.indexInfo << std::endl;
+            }
+            std::cout << ANSIColorConst::CYAN << "=========================" << ANSIColorConst::RESET << std::endl;
+
+            // Calculate the distance from data_iter to data.end()
+            size_t available_data = std::distance(data_iter, data.end());
+
+            // IMPORTANT: Use exactly metadata.expectedDataSize instead of limiting by available data
+            // This ensures we preserve the exact size recorded in the header
+            size_t payload_size = metadata.expectedDataSize;
+
+            // Warn if there's not enough data available
+            if (available_data < payload_size) {
+                // Use the printWarning function which handles locking internally
+                printWarning("Available data (" + std::to_string(available_data) +
+                           " bytes) is less than expected size (" +
+                           std::to_string(payload_size) + " bytes) in chunk " +
+                           std::to_string(metadata.currentChunk));
+
+                // We continue extracting what we can, but we record the expected size separately
+                payload_size = available_data;
+            }
+
+            // Create payload result
+            image_parser::ChunkInfo chunk;
+            chunk.chunkIndex = metadata.currentChunk;
+            chunk.totalChunks = metadata.totalChunks;
+            chunk.chunkSize = payload_size;
+            chunk.expectedDataSize = metadata.expectedDataSize; // Store the expected size
+            chunk.filename = metadata.outputFilename;
+
+            // Copy the payload data (excluding header)
+            chunk.payload.reserve(payload_size);
+            for (size_t i = 0; i < payload_size; ++i) {
+                if (data_iter == data.end()) {
+                    break;
+                }
+                chunk.payload.push_back(*data_iter);
+                ++data_iter;
+            }
+            // Use the printMessage function which handles locking internally
+            // printMessage("Extracted " + std::to_string(chunk.payload.size()) + " bytes of payload data from " + filename);
+
+            return chunk;
+        } catch (const std::exception &e) {
+            // Use the printError function which handles locking internally
+            printError("Exception processing " + filename + ": " + e.what());
+            return std::nullopt;
+        }
     }
-}
 
     /**
      * Find sub-bmp files when the main file isn't found
@@ -374,80 +348,133 @@ namespace image_parser {
                                 pattern_prefix.length(),
                                 of_pos - pattern_prefix.length()
                             );
-
                             int index = std::stoi(index_str);
-                            // std::cout << "  Found file: " << filename << " (index: " << std::to_string(index) << ")" << std::endl;
-                            printMessage("  Found file: " + filename + " (index: " + std::to_string(index) + ")");
                             indexed_files.emplace_back(index, file_full_path);
                         } catch (const std::exception &e) {
-                            // std::cout << "  Skipping " << filename << ": " << e.what() << std::endl;
                             printMessage("  Skipping " + filename + ": " + e.what());
                         }
                     }
                 }
             }
 
-            // If we didn't find any files with the exact base name, try looking for any files with _XofY pattern
+            // If we didn't find any files with the exact base name, try looking for any chunked files in the directory
             if (indexed_files.empty()) {
-                // std::cout << "No direct matches found, searching for any chunked files in the directory" << std::endl;
                 printMessage("No direct matches found, searching for any chunked files in the directory");
 
+                // Use a specific regex to match patterns like file_10of16.bmp
+                std::regex pattern(R"(.*_(\d+)of\d+\.bmp)");
+                
                 for (const auto &entry: std::filesystem::directory_iterator(directory)) {
                     if (!entry.is_regular_file() || entry.path().extension() != ".bmp") continue;
 
                     std::string filename = entry.path().filename().string();
                     std::string file_full_path = entry.path().string();
-
-                    // Look for the "of" pattern in the filename
-                    size_t of_pos = filename.find("of");
-                    if (of_pos != std::string::npos && of_pos > 1) {
-                        size_t underscore_pos = filename.rfind('_', of_pos - 1);
-
-                        if (underscore_pos != std::string::npos) {
-                            try {
-                                // Extract just the chunk number and total chunks
-                                std::string index_str = filename.substr(underscore_pos + 1, of_pos - underscore_pos - 1);
-                                std::string total_str = filename.substr(of_pos + 2);
-                                size_t dot_pos = total_str.find('.');
-                                if (dot_pos != std::string::npos) {
-                                    total_str = total_str.substr(0, dot_pos);
-
-                                    int index = std::stoi(index_str);
-                                    int total = std::stoi(total_str);
-
-                                    if (index > 0 && total > 0) {
-                                        // std::cout << "  Found potential chunk file: " << filename <<
-                                        //   " (index: " << std::to_string(index) << "/" << std::to_string(total) << ")" << std::endl;
-                                        printMessage("  Found potential chunk file: " + filename +
-                                                   " (index: " + std::to_string(index) + "/" + std::to_string(total) + ")");
-                                        indexed_files.emplace_back(index, file_full_path);
-                                    }
-                                }
-                            } catch (const std::exception &e) {
-                                // std::cout << "  Skipping " << filename << ": " << e.what() << std::endl;
-                                printMessage("  Skipping " + filename + ": " + e.what());
-                            }
+                    
+                    std::smatch matches;
+                    if (std::regex_match(filename, matches, pattern) && matches.size() > 1) {
+                        try {
+                            std::string index_str = matches[1].str();
+                            int index = std::stoi(index_str);
+                            indexed_files.emplace_back(index, file_full_path);
+                        } catch (const std::exception& e) {
+                            // Skip files with conversion errors
                         }
                     }
                 }
+                
+                // Sort by index in ascending order
+                std::sort(indexed_files.begin(), indexed_files.end(),
+                    [](const std::pair<int, std::string> &a, const std::pair<int, std::string> &b) {
+                        return a.first < b.first;
+                    });
+                    
+                // Print the sorted files
+                printMessage("Sorted files from secondary search:");
+                for (const auto &pair : indexed_files) {
+                    std::filesystem::path p(pair.second);
+                    printMessage(" - " + p.filename().string());
+                }
             }
 
-            // Sort by index
-            std::sort(indexed_files.begin(), indexed_files.end());
+            // Sort indexed files in ascending order by index
+            std::sort(indexed_files.begin(), indexed_files.end(),
+                [](const std::pair<int, std::string> &a, const std::pair<int, std::string> &b) {
+                    // Simple numeric sorting of the index value
+                    return a.first < b.first;
+                });
 
             // Extract just the paths
             for (const auto &pair: indexed_files) {
                 result.push_back(pair.second);
             }
-
-            // std::cout << Color::BRIGHT_CYAN << "Found " << result.size() << " sub-BMP files." << Color::RESET << std::endl;
+            
+            // Print the files in the order they will be processed
+            printMessage("Files will be processed in this order:");
+            for (const auto &path : result) {
+                std::filesystem::path p(path);
+                printMessage(" - " + p.filename().string());
+            }
+            
             printStatus("Found " + std::to_string(result.size()) + " sub-BMP files.");
         } catch (const std::exception &e) {
-            // std::cout << Color::RED << "Error finding sub-bmp files: " << e.what() << Color::RESET << std::endl;
             printError("Error finding sub-bmp files: " + std::string(e.what()));
         }
-
         return result;
+    }
+
+    /**
+     * Custom file name comparator that extracts and compares numeric portions
+     * of filenames to sort in ascending numeric order, properly handling patterns like "file_10of16"
+     * 
+     * @param file_a First filename
+     * @param file_b Second filename
+     * @return True if file_a should come before file_b in sorting order
+     */
+    bool fileNameComparator(const std::string& file_a, const std::string& file_b) {
+        // Extract just the filenames without path
+        std::filesystem::path path_a(file_a);
+        std::filesystem::path path_b(file_b);
+        std::string name_a = path_a.filename().string();
+        std::string name_b = path_b.filename().string();
+
+        // Specifically handle the pattern file_Xof where X is a number
+        // This is the format used for chunked files
+        std::regex of_pattern(R"(.*_(\d+)of\d+\.bmp)");
+        
+        std::smatch matches_a, matches_b;
+        bool has_of_a = std::regex_match(name_a, matches_a, of_pattern);
+        bool has_of_b = std::regex_match(name_b, matches_b, of_pattern);
+        
+        // If both have the "of" pattern, extract and compare those numbers
+        if (has_of_a && has_of_b && matches_a.size() > 1 && matches_b.size() > 1) {
+            try {
+                int index_a = std::stoi(matches_a[1].str());
+                int index_b = std::stoi(matches_b[1].str());
+                // Sort in ascending order (lowest first)
+                return index_a < index_b;
+            } catch (const std::exception& e) {
+                // Fall back if conversion fails
+            }
+        }
+        
+        // Otherwise, check for numeric indexes at the end of the filename
+        std::regex numeric_pattern(R"(.*_(\d+)\.bmp)");
+        bool has_num_a = std::regex_match(name_a, matches_a, numeric_pattern);
+        bool has_num_b = std::regex_match(name_b, matches_b, numeric_pattern);
+        
+        if (has_num_a && has_num_b && matches_a.size() > 1 && matches_b.size() > 1) {
+            try {
+                int num_a = std::stoi(matches_a[1].str());
+                int num_b = std::stoi(matches_b[1].str());
+                return num_a < num_b;
+            } catch (const std::exception& e) {
+                // Fall back if conversion fails
+            }
+        }
+        
+        // If one has pattern and other doesn't, or if extraction failed
+        // Fall back to string comparison (ascending)
+        return name_a < name_b;
     }
 
     /**
@@ -478,7 +505,8 @@ namespace image_parser {
 
                 // std::cout << "Looking for chunks with base name: " << base_name << " in " << dir_path.string() << std::endl;
                 printStatus("Looking for sub-bmp files with base name: " + base_name);
-                // std::cout << Color::BRIGHT_CYAN << "Looking for sub-bmp files with base name: " << base_filename << Color::RESET << std::endl;
+                // std::cout << Color::BRIGHT_CYAN << "Looking for sub-bmp files with base name: " 
+                //           << base_filename << Color::RESET << std::endl;
 
                 // Get all chunk files with this base name
                 std::vector<std::string> chunk_files;
@@ -496,40 +524,7 @@ namespace image_parser {
 
                 if (!chunk_files.empty()) {
                     // Sort numerically by the chunk number
-                    std::sort(chunk_files.begin(), chunk_files.end(),
-                        [](const std::string &a, const std::string &b) {
-                            // Extract chunk numbers
-                            std::filesystem::path a_path(a);
-                            std::filesystem::path b_path(b);
-                            std::string a_name = a_path.filename().string();
-                            std::string b_name = b_path.filename().string();
-
-                            size_t a_underscore = a_name.find_last_of('_');
-                            size_t b_underscore = b_name.find_last_of('_');
-
-                            if (a_underscore != std::string::npos && b_underscore != std::string::npos) {
-                                size_t a_of = a_name.find("of", a_underscore);
-                                size_t b_of = b_name.find("of", b_underscore);
-
-                                if (a_of != std::string::npos && b_of != std::string::npos) {
-                                    std::string a_index_str = a_name.substr(a_underscore + 1, a_of - a_underscore - 1);
-                                    std::string b_index_str = b_name.substr(b_underscore + 1, b_of - b_underscore - 1);
-
-                                    try {
-                                        int a_index = std::stoi(a_index_str);
-                                        int b_index = std::stoi(b_index_str);
-                                        return a_index < b_index;
-                                    } catch (...) {
-                                        // Fall back to string comparison if conversion fails
-                                    }
-                                }
-                            }
-
-                            return a < b;
-                        });
-
-                    // std::cout << "Found and sorted " << std::to_string(chunk_files.size()) << " chunk files" << std::endl;
-                    printStatus("Found and sorted " + std::to_string(chunk_files.size()) + " chunk files");
+                    std::sort(chunk_files.begin(), chunk_files.end(), fileNameComparator);
                     return chunk_files;
                 }
             }
@@ -634,34 +629,21 @@ namespace image_parser {
                     std::filesystem::path base_path = directory / base_name;
                     std::string base_filename = base_path.string();
 
-                    // std::cout << "Detected chunk file, searching for all related chunks with base name: " << base_filename << std::endl;
+
                     printMessage("Detected chunk file, searching for all related chunks with base name: " + base_filename);
-                    // std::cout << Color::BRIGHT_MAGENTA + Color::BOLD << "Detected chunked file pattern in: " 
-                    //           << filename_only << Color::RESET << std::endl;
-                    // std::cout << Color::BRIGHT_CYAN << "Looking for sub-bmp files with base name: " 
-                    //           << base_filename << Color::RESET << std::endl;
 
                     // Find all related chunks
                     files_to_process = findSubBmpFiles(base_filename);
 
-                    if (files_to_process.size() > 1) {
-                        // std::cout << "Found " << std::to_string(files_to_process.size()) << " related chunk files to process:" << std::endl;
-                        std::string files_count = std::to_string(files_to_process.size());
-                        printMessage("Found " + files_count + " related chunk files to process:");
-                        for (const auto &file_path: files_to_process) {
-                            // std::cout << "  - " << file_path << std::endl;
-                            printMessage("  - " + file_path);
-                        }
+                    if (files_to_process.size() > 1)
                         return files_to_process;
-                    }
                 }
             }
 
             // If no related chunks found or not a chunk file, just add the single file
             files_to_process.push_back(filename);
         }
-
-        std::sort(files_to_process.begin(), files_to_process.end());
+        
         return files_to_process;
     }
 
@@ -716,6 +698,16 @@ namespace image_parser {
             size_t total_bytes_written = 0;
             bool missing_chunks = false;
 
+            // Show a summary of chunk distribution at the start
+            std::cout << ANSIColorConst::CYAN << "=== Chunk distribution summary ===" << ANSIColorConst::RESET << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Total chunks:" << ANSIColorConst::RESET << " " 
+                      << ANSIColorConst::BRIGHT_YELLOW << highest_chunk_index << ANSIColorConst::RESET << std::endl;
+            if (chunks.size() < highest_chunk_index) {
+                std::cout << "  " << ANSIColorConst::RED << "Missing chunks:" << ANSIColorConst::RESET << " " 
+                          << ANSIColorConst::BRIGHT_RED << (highest_chunk_index - chunks.size()) << ANSIColorConst::RESET << std::endl;
+            }
+            std::cout << ANSIColorConst::CYAN << "===============================" << ANSIColorConst::RESET << std::endl;
+
             for (int i = 1; i <= highest_chunk_index; ++i) {
                 if (chunks.find(i) == chunks.end()) {
                     printWarning("Missing chunk " + std::to_string(i) + " - output file may be corrupt");
@@ -734,11 +726,16 @@ namespace image_parser {
                 
                 total_bytes_written += chunk.payload.size();
 
-                if (i % 10 == 0 || i == highest_chunk_index) {
-                    // Update progress every 10 chunks or on the last one
-                    printStatus("Wrote chunk " + std::to_string(i) + "/" + 
-                              std::to_string(highest_chunk_index) + " (" + 
-                              std::to_string(total_bytes_written) + " bytes)");
+                // Update progress more frequently - every 5 chunks instead of 10
+                if (i % 5 == 0 || i == highest_chunk_index || i == 1) {
+                    // Use colored output for progress updates
+                    std::cout << "  " << ANSIColorConst::GREEN << "Wrote chunk " << ANSIColorConst::RESET 
+                              << ANSIColorConst::BRIGHT_YELLOW << i << ANSIColorConst::RESET << "/" 
+                              << ANSIColorConst::BRIGHT_YELLOW << highest_chunk_index << ANSIColorConst::RESET
+                              << " (" << ANSIColorConst::BRIGHT_YELLOW 
+                              << total_bytes_written << ANSIColorConst::RESET << " bytes, " 
+                              << ANSIColorConst::BRIGHT_CYAN << static_cast<int>((static_cast<float>(i) / highest_chunk_index) * 100)
+                              << "%" << ANSIColorConst::RESET << ")" << std::endl;
                 }
             }
 
@@ -752,12 +749,29 @@ namespace image_parser {
 
             // Get actual file size
             size_t actual_file_size = std::filesystem::file_size(output_filename);
+            bool size_mismatch = false;
 
             if (actual_file_size != total_bytes_written) {
+                size_mismatch = true;
                 printWarning("File size mismatch: expected " + std::to_string(total_bytes_written) +
                           " bytes, got " + std::to_string(actual_file_size) + " bytes");
             }
 
+            // Show final summary
+            std::cout << ANSIColorConst::CYAN << "=== Writing complete ===" << ANSIColorConst::RESET << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Total bytes written:" << ANSIColorConst::RESET << " " 
+                     << ANSIColorConst::BRIGHT_YELLOW << total_bytes_written << ANSIColorConst::RESET << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Output file:" << ANSIColorConst::RESET << " " 
+                     << output_filename << std::endl;
+            if (missing_chunks) {
+                std::cout << "  " << ANSIColorConst::RED << "Warning: Some chunks were missing!" << ANSIColorConst::RESET << std::endl;
+            }
+            if (size_mismatch) {
+                std::cout << "  " << ANSIColorConst::RED << "Warning: File size mismatch:" << ANSIColorConst::RESET << " expected " 
+                         << ANSIColorConst::BRIGHT_YELLOW << total_bytes_written << ANSIColorConst::RESET
+                         << " bytes, got " << ANSIColorConst::BRIGHT_YELLOW << actual_file_size << ANSIColorConst::RESET << " bytes" << std::endl;
+            }
+            std::cout << ANSIColorConst::CYAN << "======================" << ANSIColorConst::RESET << std::endl;
             printCompletion("File written successfully", total_bytes_written);
 
             return !missing_chunks;
@@ -944,8 +958,6 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
             return;
         }
 
-        // std::cout << "Found " << std::to_string(files_to_process.size()) << " files to process" << std::endl;
-
         // Initialize ResourceManager with specified limits
         auto& resManager = ResourceManager::getInstance();
 
@@ -965,11 +977,62 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
             // Default to 1GB if not specified
             resManager.setMaxMemory(1024 * 1024 * 1024);
         }
+        
+        // PRE-CALCULATE MEMORY REQUIREMENTS
+        size_t total_memory_needed = 0;
+        size_t safety_margin = 1024 * 1024; // 1MB safety margin
+        
+        // First, estimate the memory needs based on all the image files
+        for (const auto &file : files_to_process) {
+            try {
+                std::ifstream::pos_type file_size = image_parser::fileSize(file.c_str());
+                
+                if (file_size > 0) {
+                    // Estimate memory needed for this file (based on BMP dimensions and format)
+                    // We allocate approximately 3x the file size as each pixel needs processing
+                    size_t estimated_file_memory = static_cast<size_t>(file_size) * 3;
+                    
+                    // Add to total with boundary check
+                    if (total_memory_needed + estimated_file_memory + safety_margin <= resManager.getMaxMemory()) {
+                        total_memory_needed += estimated_file_memory;
+                        printMessage("Adding " + std::to_string(estimated_file_memory / (1024*1024)) + 
+                                   " MB for " + file + ", total now: " + 
+                                   std::to_string(total_memory_needed / (1024*1024)) + " MB");
+                    } else {
+                        printWarning("Memory limit would be exceeded. Capping at maximum available.");
+                        total_memory_needed = resManager.getMaxMemory() - safety_margin;
+                        break;
+                    }
+                }
+            } catch (const std::exception& e) {
+                printWarning("Error estimating memory for " + file + ": " + e.what());
+                // Add a conservative estimate if we can't determine size
+                total_memory_needed += 10 * 1024 * 1024; // 10MB per file as fallback
+                
+                // Check if we hit the memory limit
+                if (total_memory_needed + safety_margin >= resManager.getMaxMemory()) {
+                    total_memory_needed = resManager.getMaxMemory() - safety_margin;
+                    break;
+                }
+            }
+        }
+        
+        // Allocate the entire memory block upfront
+        printMessage("Pre-allocating " + std::to_string(total_memory_needed / (1024*1024)) + 
+                   " MB for all image processing");
+        
+        bool memory_allocated = resManager.allocateMemory(
+            total_memory_needed, 
+            std::chrono::milliseconds(10000), 
+            "TotalImageProcessingMemory"
+        );
+        
+        if (!memory_allocated) {
+            printWarning("Could not allocate requested memory. Will try to continue with available memory.");
+        }
 
         // Process each file in a separate thread
         for (const auto &file : files_to_process) {
-            // std::cout << "Processing file: " << file << std::endl;
-            printFilePath("Processing file: " + file);
 
             // Use ResourceManager to run threads with proper limits
             bool thread_scheduled = resManager.runWithThread(
