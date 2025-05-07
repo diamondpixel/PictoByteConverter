@@ -7,7 +7,6 @@
 #include <thread>
 #include <mutex>
 #include <sstream>
-#include <format>     // Add format header
 #include <iomanip>    // For std::setw, std::setfill
 #include <optional>   // For std::optional
 #include <queue>      // For std::queue

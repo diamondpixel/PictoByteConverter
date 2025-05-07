@@ -515,7 +515,7 @@ void printProcessingStep(const char* stepText, bool forceOutput) {
 }
 
 void printHighlight(const std::string& infoText, bool forceOutput) {
-    debugPrint("→ " + infoText, forceOutput, ANSIColor::BRIGHT_YELLOW);
+    debugPrint(">> " + infoText, forceOutput, ANSIColor::BRIGHT_YELLOW);
 }
 
 void printHighlight(const char* infoText, bool forceOutput) {
