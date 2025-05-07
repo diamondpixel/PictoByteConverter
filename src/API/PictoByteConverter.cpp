@@ -2,7 +2,6 @@
 #include "../Image/headers/ParseToImage.h"
 #include "../Image/headers/ParseFromImage.h"
 #include "../Debug/headers/Debug.h"
-#include "../Image/headers/ResourceManager.h"
 
 #include <string>
 #include <functional>
@@ -22,7 +21,9 @@ namespace {
     void LogMessage(const std::string& message) {
         std::lock_guard<std::mutex> lock(g_callbackMutex);
         if (g_logCallback) {
-            g_logCallback(message.c_str());
+            // Format message for better spacing and readability
+            std::string formattedMessage = formatMessage(message);
+            g_logCallback(formattedMessage.c_str());
         }
     }
 }
@@ -41,6 +42,16 @@ bool FileToImage(
     setDebugMode(debugMode);
     
     try {
+        if (debugMode) {
+            LogMessage("Starting file-to-image conversion");
+            LogMessage("Input file: " + inputFilePath);
+            LogMessage("Output base name: " + outputFilePath);
+            LogMessage("Resources: " + 
+                      (maxThreads == 0 ? "Auto" : std::to_string(maxThreads)) + " threads, " + 
+                      std::to_string(maxMemoryMB) + " MB memory, " + 
+                      std::to_string(maxChunkSizeMB) + " MB chunk size");
+        }
+        
         bool result = parseToImage(
             inputFilePath,
             outputFilePath,
@@ -50,7 +61,11 @@ bool FileToImage(
         );
         
         if (debugMode) {
-            LogMessage("FileToImage operation " + std::string(result ? "succeeded" : "failed"));
+            if (result) {
+                LogMessage("FileToImage operation completed successfully");
+            } else {
+                LogMessage("FileToImage operation failed");
+            }
         }
         
         return result;
@@ -74,6 +89,15 @@ bool ImageToFile(
     setDebugMode(debugMode);
     
     try {
+        if (debugMode) {
+            LogMessage("Starting image-to-file extraction");
+            LogMessage("Input image: " + inputFilePath);
+            LogMessage("Output directory: " + (outputDirectory.empty() ? "Current directory" : outputDirectory));
+            LogMessage("Resources: " + 
+                      (maxThreads == 0 ? "Auto" : std::to_string(maxThreads)) + " threads, " + 
+                      std::to_string(maxMemoryMB) + " MB memory");
+        }
+        
         // parseFromImage returns void, so we can't assign it to a bool result
         parseFromImage(
             inputFilePath,
@@ -83,7 +107,7 @@ bool ImageToFile(
         );
         
         if (debugMode) {
-            LogMessage("ImageToFile operation succeeded");
+            LogMessage("ImageToFile operation completed successfully");
         }
         
         return true; // If no exception was thrown, consider it successful

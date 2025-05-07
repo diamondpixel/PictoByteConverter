@@ -8,16 +8,16 @@
 using namespace std;
 
 void printUsage() {
-    cout << "Usage: ConvertToImage [options]" << endl;
-    cout << "Options:" << endl;
-    cout << "  --debug            Enable debug output mode" << endl;
-    cout << "  --mode=<mode>      Select operation mode (0: File to Image, 1: Image to File)" << endl;
-    cout << "  --input=<file>     Specify input file" << endl;
-    cout << "  --output=<file>    Specify output file" << endl;
-    cout << "  --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)" << endl;
-    cout << "  --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)" << endl;
-    cout << "  --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)" << endl;
-    cout << "  --help             Display this help message" << endl;
+    printStatus("Usage: ConvertToImage [options]");
+    std::cout << "Options:" << std::endl;
+    std::cout << "  --debug            Enable debug output mode" << std::endl;
+    std::cout << "  --mode=<mode>      Select operation mode (0: File to Image, 1: Image to File)" << std::endl;
+    std::cout << "  --input=<file>     Specify input file" << std::endl;
+    std::cout << "  --output=<file>    Specify output file" << std::endl;
+    std::cout << "  --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)" << std::endl;
+    std::cout << "  --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)" << std::endl;
+    std::cout << "  --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)" << std::endl;
+    std::cout << "  --help             Display this help message" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -29,72 +29,102 @@ int main(int argc, char* argv[]) {
     int maxMemoryMB = 1024;  // Default: 1GB
     int maxChunkSizeMB = 9;  // Default: 9MB per chunk
     
-    // Parse command-line arguments
-    printMessage("Parsing " + std::to_string(argc) + " command line arguments");
+    // First pass to check for debug mode
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
-        printMessage("Processing argument: " + arg);
-        
         if (arg == "--debug") {
             debugMode = true;
+            break;
+        }
+    }
+    
+    // Ensure debug mode is globally visible with the strongest memory ordering
+    // Sequential consistency guarantees all threads see the same value
+    gDebugMode.store(debugMode, std::memory_order_seq_cst);
+    
+    // Set environment variable for child processes
+    if (debugMode) {
+        #ifdef _WIN32
+        _putenv_s("DEBUG", "1");
+        #else
+        setenv("DEBUG", "1", 1);
+        #endif
+    }
+    
+    // Parse command-line arguments
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i];
+        
+        if (arg == "--debug") {
+            // Skip debug mode argument as it's already handled
+            continue;
+        }
+        else if (arg == "--mode" || arg == "-m") {
+            if (i + 1 < argc) {
+                string modeStr = argv[i + 1];
+                if (modeStr == "0" || modeStr == "file2img" || modeStr == "toimage") {
+                    mode = 0;
+                } else if (modeStr == "1" || modeStr == "img2file" || modeStr == "fromimage") {
+                    mode = 1;
+                } else {
+                    printError("Invalid mode: " + modeStr);
+                    printUsage();
+                    return 1;
+                }
+                i++; // Skip the value
+            }
         }
         else if (arg.substr(0, 7) == "--mode=") {
             string modeStr = arg.substr(7);
             if (modeStr == "0") mode = 0;
             else if (modeStr == "1") mode = 1;
             else {
-                cerr << "Invalid mode: " << modeStr << endl;
+                printError("Invalid mode: " + modeStr);
                 printUsage();
                 return 1;
             }
         }
         else if (arg.substr(0, 8) == "--input=") {
             inputFile = arg.substr(8);
-            printMessage("Set input file to: " + inputFile);
         }
         else if (arg.substr(0, 9) == "--output=") {
             outputFile = arg.substr(9);
-            printMessage("Set output file to: " + outputFile);
         }
         else if (arg.substr(0, 9) == "--maxCPU=") {
             try {
                 maxThreads = std::stoi(arg.substr(9));
-                printMessage("Set max CPU threads to: " + std::to_string(maxThreads));
-                if (maxThreads < 0) {
-                    cerr << "Invalid maxCPU value: " << maxThreads << " (must be >= 0)" << endl;
-                    maxThreads = 0; // Reset to default
+                if (maxThreads <= 0) {
+                    printWarning("Invalid maxCPU value: " + std::to_string(maxThreads) + " (must be >= 0)");
+                    maxThreads = 0; // Auto
                 }
             } catch (const std::exception& e) {
-                cerr << "Invalid maxCPU value, using default" << endl;
+                printWarning("Invalid maxCPU value, using default");
                 maxThreads = 0;
             }
         }
         else if (arg.substr(0, 12) == "--maxMemory=") {
             try {
                 maxMemoryMB = std::stoi(arg.substr(12));
-                printMessage("Set max memory to: " + std::to_string(maxMemoryMB) + " MB");
                 if (maxMemoryMB < 64) {
-                    cerr << "Invalid maxMemory value: " << maxMemoryMB << " MB (must be >= 64 MB)" << endl;
-                    maxMemoryMB = 1024; // Reset to default
+                    printWarning("Invalid maxMemory value: " + std::to_string(maxMemoryMB) + " MB (must be >= 64 MB)");
+                    maxMemoryMB = 1024; // Default: 1GB
                 }
             } catch (const std::exception& e) {
-                cerr << "Invalid maxMemory value, using default (1024 MB)" << endl;
+                printWarning("Invalid maxMemory value, using default (1024 MB)");
                 maxMemoryMB = 1024;
             }
         }
         else if (arg.substr(0, 14) == "--maxChunkSize=") {
             try {
                 maxChunkSizeMB = std::stoi(arg.substr(14));
-                printMessage("Set max chunk size to: " + std::to_string(maxChunkSizeMB) + " MB");
                 if (maxChunkSizeMB < 1) {
-                    cerr << "Invalid maxChunkSize value: " << maxChunkSizeMB << " MB (must be >= 1 MB)" << endl;
-                    maxChunkSizeMB = 9; // Reset to default
-                }
-                if (maxChunkSizeMB > 50) {
-                    cerr << "Warning: Large chunk sizes (>" << 50 << " MB) may lead to memory issues." << endl;
+                    printWarning("Invalid maxChunkSize value: " + std::to_string(maxChunkSizeMB) + " MB (must be >= 1 MB)");
+                    maxChunkSizeMB = 9; // Default: 9MB
+                } else if (maxChunkSizeMB > 50) {
+                    printWarning("Large chunk sizes (>50 MB) may lead to memory issues");
                 }
             } catch (const std::exception& e) {
-                cerr << "Invalid maxChunkSize value, using default (9 MB)" << endl;
+                printWarning("Invalid maxChunkSize value, using default (9 MB)");
                 maxChunkSizeMB = 9;
             }
         }
@@ -103,41 +133,60 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else {
-            cerr << "Unknown option: " << arg << endl;
+            printError("Unknown option: " + arg);
             printUsage();
             return 1;
         }
     }
     
-    // Set debug mode based on command line flag
-    setDebugMode(debugMode);
-    
     // Display current working directory
-    cout << "Current working directory: " << std::filesystem::current_path().string() << endl;
-    cout << "Mode: " << (mode == 0 ? "File to Image" : "Image to File") << endl;
-    if (debugMode) {
-        cout << "Debug mode: Enabled" << endl;
+    // printFilePath("Current working directory: " + std::filesystem::current_path().string());
+    
+    // Show operation mode in color
+    if (mode == 0) {
+        printStatus("Mode: File to Image");
+    } else {
+        printStatus("Mode: Image to File");
     }
-    cout << "Resource limits: " << (maxThreads == 0 ? "Auto" : std::to_string(maxThreads)) << " threads, " 
-         << maxMemoryMB << " MB memory, " << maxChunkSizeMB << " MB max chunk size" << endl;
+    
+    // Show debug status if enabled
+    if (debugMode) {
+        printStatus("Debug mode: Enabled");
+    }
+    
+    // Show resource limits
+    // printStats("Resource limits: " + 
+    //             (maxThreads == 0 ? "Auto" : std::to_string(maxThreads)) + " threads, " + 
+    //             std::to_string(maxMemoryMB) + " MB memory, " + 
+    //             std::to_string(maxChunkSizeMB) + " MB max chunk size");
 
+    bool success = false;
     switch (mode) {
         case 0:
-            cout << "Converting file to image..." << endl;
-            cout << "Input: " << inputFile << ", Output: " << outputFile << endl;
-            parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB);  // Use maxChunkSizeMB instead of hardcoded 9
-            break;
-        case 1:
-            cout << "Extracting file from image..." << endl;
-            cout << "Input image: " << inputFile << endl;
-            if (!outputFile.empty()) {
-                cout << "Output path: " << outputFile << endl;
-                parseFromImage(inputFile, outputFile, maxThreads, maxMemoryMB);
-            } else {
-                parseFromImage(inputFile, "", maxThreads, maxMemoryMB);
+            printProcessingStep("Converting file to image...");
+            printFilePath("Input: " + inputFile);
+            printFilePath("Output: " + outputFile);
+            success = parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB);
+            if (success) {
+                printSuccess("File successfully converted to image!");
             }
             break;
+        case 1:
+            printProcessingStep("Extracting file from image...");
+            if (!outputFile.empty()) {
+                printFilePath("Input: " + inputFile);
+                printFilePath("Output: " + outputFile);
+                parseFromImage(inputFile, outputFile, maxThreads, maxMemoryMB);
+            } else {
+                printFilePath("Input: " + inputFile);
+                parseFromImage(inputFile, "", maxThreads, maxMemoryMB);
+            }
+            // Success message is already printed in parseFromImage function
+            // printSuccess("File successfully extracted from image!");
+            break;
         default:
+            printError("No valid mode selected");
+            printUsage();
             return 1;
     }
 

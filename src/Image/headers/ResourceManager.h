@@ -72,6 +72,13 @@ private:
         }
         return oss.str();
     }
+    
+    // Helper method to print debug messages
+    void debugLog(const std::string& message) {
+        if (getDebugMode()) {
+            printMessage(message, true);
+        }
+    }
 
 public:
     /**
@@ -90,7 +97,7 @@ public:
      */
     void setMaxThreads(size_t threads) {
         max_threads = (threads > 0) ? threads : 1;
-        printMessage("ResourceManager: Max threads set to " + std::to_string(max_threads));
+        debugLog("ResourceManager: Max threads set to " + std::to_string(threads));
     }
 
     /**
@@ -98,8 +105,7 @@ public:
      */
     void setMaxMemory(size_t memory_bytes) {
         max_memory_usage = (memory_bytes > 1024 * 1024) ? memory_bytes : 1024 * 1024; // Min 1MB
-        printMessage("ResourceManager: Max memory set to " + 
-                     std::to_string(max_memory_usage / (1024 * 1024)) + " MB");
+        debugLog("ResourceManager: Max memory set to " + std::to_string(max_memory_usage / (1024 * 1024)) + " MB");
     }
     
     /**
@@ -166,11 +172,13 @@ public:
         std::string status = "Memory Status: Using " + formatMemorySize(current_memory_usage) +
                             " of " + formatMemorySize(max_memory_usage) + 
                             " (" + std::to_string(num_allocations) + " active allocations)";
-        printStatus(status);
+        
+        debugLog(status);
         
         // Print detailed report if enabled
-        if (detailed_tracking_enabled && !memory_allocations.empty()) {
-            printMessage("Detailed memory allocations:");
+        if (detailed_tracking_enabled && !memory_allocations.empty() && getDebugMode()) {
+            debugLog("Detailed memory allocations:");
+            
             for (const auto& [id, info] : memory_allocations) {
                 auto now = std::chrono::system_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - info.timestamp).count();
@@ -179,7 +187,8 @@ public:
                                     " Size: " + formatMemorySize(info.size) +
                                     " Age: " + std::to_string(duration) + "s" +
                                     (!info.tag.empty() ? " Tag: " + info.tag : "");
-                printStatus(detail);
+                
+                debugLog(detail);
             }
         }
     }
@@ -222,14 +231,16 @@ public:
                 }
                 message += " (Total: " + formatMemorySize(current_memory_usage) + 
                           ", " + std::to_string(memory_allocations.size()) + " allocations)";
-                printStatus(message);
+                
+                debugLog(message);
             }
             return true;
         }
         
-        printWarning("Memory allocation of " + formatMemorySize(bytes) + 
-                   " timed out. Current usage: " + formatMemorySize(current_memory_usage) + 
-                   " of " + formatMemorySize(max_memory_usage));
+        std::string failMessage = "Memory allocation of " + formatMemorySize(bytes) + 
+                 " timed out. Current usage: " + formatMemorySize(current_memory_usage) + 
+                 " of " + formatMemorySize(max_memory_usage);
+        debugLog(failMessage);
         return false;
     }
 
@@ -247,8 +258,9 @@ public:
             // Check for underflow
             if (bytes > current_memory_usage) {
                 adjusted_bytes = current_memory_usage;
-                printWarning("Attempted to free more memory than allocated: " + 
-                           formatMemorySize(bytes) + " > " + formatMemorySize(current_memory_usage));
+                std::string warnMessage = "Attempted to free more memory than allocated: " + 
+                         formatMemorySize(bytes) + " > " + formatMemorySize(current_memory_usage);
+                debugLog(warnMessage);
             }
             
             // Free memory
@@ -288,7 +300,8 @@ public:
             }
             message += " (Remaining: " + formatMemorySize(current_memory_usage) + 
                       ", " + std::to_string(memory_allocations.size()) + " allocations)";
-            printStatus(message);
+            
+            debugLog(message);
         }
         
         // Notify waiting threads
@@ -322,7 +335,7 @@ public:
                 // Call the function with the arguments
                 std::apply(f, args);
             } catch (const std::exception& e) {
-                printError("Thread exception: " + std::string(e.what()));
+                debugLog("Thread exception: " + std::string(e.what()));
             }
             
             // Release the thread slot when done
