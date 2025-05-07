@@ -26,16 +26,6 @@
  * with embedded data for storage and later retrieval.
  */
 class BitmapImage {
-private:
-    /** Raw pixel data (RGB format, 3 bytes per pixel) */
-    std::vector<unsigned char> pixels;
-    
-    /** Width of the image in pixels */
-    int width;
-    
-    /** Height of the image in pixels */
-    int height;
-
 public:
     /**
      * Constructs a BitmapImage with the specified dimensions
@@ -43,22 +33,32 @@ public:
      * @param height Height of the image in pixels
      */
     BitmapImage(int width, int height);
-    
+
     /**
      * Sets binary data into the pixel buffer at the specified offset
      * @param data Binary data to be embedded in the image
      * @param offset Starting position in the pixel buffer
      */
-    void setData(const std::vector<uint8_t>& data, size_t offset);
-    
+    void setData(const std::vector<uint8_t> &data, size_t offset);
+
     /**
      * Saves the image to a BMP file
      * @param filename Path where the BMP file will be saved
      */
-    void save(const std::string& filename);
-    
+    void save(const std::string &filename);
+
     /** Default destructor */
     ~BitmapImage() = default;
+
+private:
+    /** Raw pixel data (RGB format, 3 bytes per pixel) */
+    std::vector<unsigned char> pixels;
+
+    /** Width of the image in pixels */
+    int width;
+
+    /** Height of the image in pixels */
+    int height;
 };
 
 /**
@@ -68,7 +68,7 @@ public:
 struct ImageTaskInternal {
     /** Path where the image should be saved */
     std::string filename;
-    
+
     /** The bitmap image data to save */
     BitmapImage image;
 };
@@ -77,30 +77,20 @@ struct ImageTaskInternal {
  * Thread-safe queue implementation for managing producer-consumer pattern
  * between chunk processing and image writing threads. Provides synchronized
  * access to queue operations to prevent data races.
- * 
+ *
  * @tparam T Type of items stored in the queue
  */
-template <typename T>
+template<typename T>
 class ThreadSafeQueueTemplate {
-private:
-    /** Underlying queue to store the items */
-    std::queue<T> queue;
-    
-    /** Mutex for synchronizing access to the queue */
-    mutable std::mutex mutex;
-    
-    /** Condition variable for signaling queue state changes */
-    std::condition_variable cv;
-
 public:
     /**
      * Adds an item to the queue in a thread-safe manner
      * @param item The item to add to the queue
      */
-    void push(const T& item) {
-        std::lock_guard<std::mutex> lock(mutex);  // Lock the mutex during the operation
-        queue.push(item);                         // Add the item to the queue
-        cv.notify_one();                          // Notify one waiting thread
+    void push(const T &item) {
+        std::lock_guard<std::mutex> lock(mutex); // Lock the mutex during the operation
+        queue.push(item); // Add the item to the queue
+        cv.notify_one(); // Notify one waiting thread
     }
 
     /**
@@ -108,8 +98,8 @@ public:
      * @return True if the queue is empty, false otherwise
      */
     [[nodiscard]] bool empty() const {
-        std::lock_guard<std::mutex> lock(mutex);  // Lock the mutex during the check
-        return queue.empty();                     // Return the queue state
+        std::lock_guard<std::mutex> lock(mutex); // Lock the mutex during the check
+        return queue.empty(); // Return the queue state
     }
 
     /**
@@ -118,23 +108,33 @@ public:
      * @return An optional containing the popped item or nullopt if timeout expired
      */
     [[nodiscard]] std::optional<T> try_pop(std::chrono::milliseconds timeout) {
-        std::unique_lock<std::mutex> lock(mutex);  // Unique lock for condition variable
-        
+        std::unique_lock<std::mutex> lock(mutex); // Unique lock for condition variable
+
         // Wait for the condition or timeout
         if (cv.wait_for(lock, timeout, [this] { return !queue.empty(); })) {
-            T item = std::move(queue.front());  // Get the front item
-            queue.pop();                        // Remove it from the queue
-            return item;                        // Return the item
+            T item = std::move(queue.front()); // Get the front item
+            queue.pop(); // Remove it from the queue
+            return item; // Return the item
         }
-        
-        return std::nullopt;  // Return empty optional if timeout expired
+
+        return std::nullopt; // Return empty optional if timeout expired
     }
+
+private:
+    /** Underlying queue to store the items */
+    std::queue<T> queue;
+
+    /** Mutex for synchronizing access to the queue */
+    mutable std::mutex mutex;
+
+    /** Condition variable for signaling queue state changes */
+    std::condition_variable cv;
 };
 
 /**
  * Calculates optimal rectangular dimensions for a bitmap that needs to store a specific
  * amount of data while respecting maximum file size constraints.
- * 
+ *
  * @param total_bytes Total bytes of data to store in the image
  * @param bytes_per_pixel Number of bytes per pixel (typically 3 for RGB)
  * @param bmp_header_size Size of the BMP header in bytes
@@ -142,7 +142,8 @@ public:
  * @param aspect_ratio Desired width:height ratio (default 1.0 for square)
  * @return A pair of width and height dimensions
  */
-std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t bmp_header_size,
+std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, size_t bytes_per_pixel,
+                                                         size_t bmp_header_size,
                                                          size_t max_size_bytes, float aspect_ratio = 1.0f) {
     // Add buffer for ensuring all data fits with no truncation
     // Extra 500 pixels provide safety margin for rounding errors
@@ -174,7 +175,7 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
     // Calculate row padding and actual file size
     // BMP rows must be padded to multiple of 4 bytes
     size_t row_bytes = width * bytes_per_pixel;
-    size_t padding = (4 - (row_bytes % 4)) % 4; 
+    size_t padding = (4 - (row_bytes % 4)) % 4;
     size_t actual_image_size = bmp_header_size + (height * (row_bytes + padding));
 
     // Shrink dimensions if image would exceed max size
@@ -197,7 +198,7 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
  * Optimizes dimensions specifically for the last image, which may have different
  * requirements than regular chunks. The last image might contain metadata or
  * have special handling requirements.
- * 
+ *
  * @param total_bytes Total bytes of data to store
  * @param bytes_per_pixel Number of bytes per pixel
  * @param metadata_size Size of metadata to be included
@@ -205,8 +206,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
  * @param aspect_ratio Desired width:height ratio
  * @return A pair of width and height dimensions
  */
-std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t metadata_size, 
-                                                     size_t bmp_header_size, float aspect_ratio = 1.0f) {
+std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t metadata_size,
+                                                      size_t bmp_header_size, float aspect_ratio = 1.0f) {
     // For last chunk, we need to account for both metadata and file data
     size_t total_data_size = metadata_size + total_bytes;
     size_t total_pixels_needed = (total_data_size + bytes_per_pixel - 1) / bytes_per_pixel;
@@ -239,56 +240,56 @@ std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t
  * Reads a segment of a file with memory management handled by ResourceManager.
  * Attempts to allocate memory for the requested segment, and falls back to
  * smaller allocations if necessary.
- * 
+ *
  * @param file Open input file stream
  * @param start_pos Starting position in the file
  * @param length Number of bytes to read
  * @return Vector containing the read data, or empty on failure
  */
-std::vector<uint8_t> readFileSegment(std::ifstream& file, size_t start_pos, size_t length) {
+std::vector<uint8_t> readFileSegment(std::ifstream &file, size_t start_pos, size_t length) {
     // Get singleton instance of the resource manager
-    auto& resManager = ResourceManager::getInstance();
-    
+    auto &resManager = ResourceManager::getInstance();
+
     // Try to allocate the requested memory
     bool memory_allocated = resManager.allocateMemory(length);
-    
+
     // If full allocation failed, try with reduced size
     if (!memory_allocated) {
-        printWarning("Memory allocation for " + std::to_string(length / (1024 * 1024)) + 
-                    " MB failed, reducing buffer size");
+        printWarning("Memory allocation for " + std::to_string(length / (1024 * 1024)) +
+                     " MB failed, reducing buffer size");
         // Try with half the size if full allocation failed
         length /= 2;
         memory_allocated = resManager.allocateMemory(length);
-        
+
         // If still can't allocate, return empty result
         if (!memory_allocated) {
             printError("Could not allocate memory for file segment");
             return {};
         }
     }
-    
+
     // Create buffer and read data from file
     std::vector<uint8_t> buffer(length);
-    
+
     file.seekg(start_pos, std::ios::beg);
-    file.read(reinterpret_cast<char*>(buffer.data()), length);
-    
+    file.read(reinterpret_cast<char *>(buffer.data()), length);
+
     // If EOF reached, resize buffer to actual bytes read and free unused memory
     if (file.eof()) {
         auto actual_size = file.gcount();
         buffer.resize(actual_size);
         resManager.freeMemory(length - actual_size);
     }
-    
+
     return buffer;
 }
 
 /**
  * Processes a single chunk of the input file, converting it to a bitmap image.
  * Each chunk includes metadata about the original file and chunk position.
- * This function handles the core logic of reading a file segment, adding 
+ * This function handles the core logic of reading a file segment, adding
  * metadata headers, and preparing the image for storage.
- * 
+ *
  * @param chunk_index Index of the current chunk (0-based)
  * @param chunk_size Size of each chunk in bytes
  * @param total_chunks Total number of chunks in the file
@@ -298,17 +299,17 @@ std::vector<uint8_t> readFileSegment(std::ifstream& file, size_t start_pos, size
  * @param task_queue Thread-safe queue for writer tasks
  * @param max_image_file_size Maximum size in bytes for output image files
  */
-void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_t original_file_size, 
-                 const std::string& input_file, const std::string& output_base, 
-                 ThreadSafeQueueTemplate<ImageTaskInternal>& task_queue, size_t max_image_file_size) {
-    
+void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_t original_file_size,
+                  const std::string &input_file, const std::string &output_base,
+                  ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, size_t max_image_file_size) {
     // Get the current debug mode setting
     auto localDebugMode = getDebugMode();
 
     // Generate output path for this chunk's image
     // Format: basename_XofY.bmp where X is current chunk and Y is total chunks
-    auto formatted_path = output_base + "_" + std::to_string(chunk_index + 1) + "of" + std::to_string(total_chunks) + ".bmp";
-    
+    auto formatted_path = output_base + "_" + std::to_string(chunk_index + 1) + "of" + std::to_string(total_chunks) +
+                          ".bmp";
+
     // Log the chunk processing start
     printHighlight("Processing chunk " + std::to_string(chunk_index + 1) + " of " + std::to_string(total_chunks));
     printFilePath("Chunk output: " + formatted_path);
@@ -316,9 +317,7 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
     // Calculate chunk boundaries
     // Determine start position and actual size of this chunk
     auto start_pos = chunk_index * chunk_size;
-    auto actual_chunk_size = (chunk_index == total_chunks - 1) ?
-                               (original_file_size - start_pos) :
-                               chunk_size;
+    auto actual_chunk_size = (chunk_index == total_chunks - 1) ? (original_file_size - start_pos) : chunk_size;
 
     try {
         // Open the input file in binary mode
@@ -341,43 +340,43 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
         // This allows the parser to know how much metadata to read
         constexpr uint32_t header_length = 48;
         metadata.push_back((header_length >> 16) & 0xFF); // High byte
-        metadata.push_back((header_length >> 8) & 0xFF);  // Middle byte
-        metadata.push_back(header_length & 0xFF);         // Low byte
+        metadata.push_back((header_length >> 8) & 0xFF); // Middle byte
+        metadata.push_back(header_length & 0xFF); // Low byte
 
         // 2. Filename length (2 bytes)
         // Store the length of the original filename
         auto filename = std::filesystem::path(input_file).filename().string();
         auto filename_length = static_cast<uint16_t>(filename.length());
         metadata.push_back((filename_length >> 8) & 0xFF); // High byte
-        metadata.push_back(filename_length & 0xFF);        // Low byte
+        metadata.push_back(filename_length & 0xFF); // Low byte
 
         // 3. Store original filename
         // Each character is converted to a byte
-        for (char c : filename) {
+        for (char c: filename) {
             metadata.push_back(static_cast<uint8_t>(c));
         }
 
         // 4. Data size (10 bytes, zero-padded string)
         // Stores the actual chunk size as a fixed-width string
         auto data_size_str = std::to_string(chunk_data.size());
-        data_size_str = std::string(10 - data_size_str.length(), '0') + data_size_str; 
-        for (char c : data_size_str) {
+        data_size_str = std::string(10 - data_size_str.length(), '0') + data_size_str;
+        for (char c: data_size_str) {
             metadata.push_back(static_cast<uint8_t>(c));
         }
 
         // 5. Current chunk number (4 bytes, zero-padded string)
         // Stores the 1-based chunk index (user-friendly numbering)
         auto current_chunk_str = std::to_string(chunk_index + 1);
-        current_chunk_str = std::string(4 - current_chunk_str.length(), '0') + current_chunk_str; 
-        for (char c : current_chunk_str) {
+        current_chunk_str = std::string(4 - current_chunk_str.length(), '0') + current_chunk_str;
+        for (char c: current_chunk_str) {
             metadata.push_back(static_cast<uint8_t>(c));
         }
 
         // 6. Total chunks (4 bytes, zero-padded string)
         // Total number of chunks needed to reconstruct the file
         auto total_chunks_str = std::to_string(total_chunks);
-        total_chunks_str = std::string(4 - total_chunks_str.length(), '0') + total_chunks_str; 
-        for (char c : total_chunks_str) {
+        total_chunks_str = std::string(4 - total_chunks_str.length(), '0') + total_chunks_str;
+        for (char c: total_chunks_str) {
             metadata.push_back(static_cast<uint8_t>(c));
         }
 
@@ -401,7 +400,7 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
         if (chunk_index == total_chunks - 1) {
             // Last chunk may have special handling
             dimensions = optimizeLastImageDimensions(chunk_data.size(), bytes_per_pixel,
-                                                   metadata.size(), bmp_header_size);
+                                                     metadata.size(), bmp_header_size);
         } else {
             dimensions = calculateOptimalRectDimensions(
                 metadata.size() + chunk_data.size(),
@@ -415,7 +414,7 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
 
         // Log the dimensions for tracking/debugging
         printMessage("Chunk " + std::to_string(chunk_index + 1) + " image dimensions: " +
-                    std::to_string(width) + " x " + std::to_string(height) + " pixels");
+                     std::to_string(width) + " x " + std::to_string(height) + " pixels");
 
         // Calculate memory requirements for the bitmap
         auto total_pixels = width * height;
@@ -442,10 +441,9 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
 
         // Log successful processing
         printStatus("Processed chunk " + std::to_string(chunk_index + 1) + " of " +
-                   std::to_string(total_chunks) + " (" +
-                   std::to_string(chunk_data.size()) + " bytes)");
-
-    } catch (const std::exception& e) {
+                    std::to_string(total_chunks) + " (" +
+                    std::to_string(chunk_data.size()) + " bytes)");
+    } catch (const std::exception &e) {
         // Log error and propagate exception
         printError("Error processing chunk " + std::to_string(chunk_index + 1) + ": " + e.what());
         throw;
@@ -456,20 +454,20 @@ void processChunk(int chunk_index, size_t chunk_size, size_t total_chunks, size_
  * Saves an image task to disk as a BMP file.
  * This function encapsulates the process of saving an image to disk,
  * with appropriate error handling.
- * 
+ *
  * @param task The image task containing the filename and bitmap image
  */
-void saveImage(const ImageTaskInternal& task) {
+void saveImage(const ImageTaskInternal &task) {
     try {
         // Get the image from the task
         BitmapImage img = task.image;
-        
+
         // Save to the specified path
         img.save(task.filename);
-        
+
         // Log successful save
         printStatus("Saved image: " + task.filename);
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         // Log any errors during the save operation
         printError("Failed to save image: " + std::string(e.what()));
     }
@@ -479,11 +477,11 @@ void saveImage(const ImageTaskInternal& task) {
  * Background thread that waits for image tasks and saves them to disk.
  * Continues running until explicitly terminated and queue is empty.
  * This thread is responsible for handling all disk I/O operations to save images.
- * 
+ *
  * @param task_queue Thread-safe queue containing image tasks to process
  * @param should_terminate Atomic flag indicating whether the thread should exit
  */
-void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal>& task_queue, std::atomic<bool>& should_terminate) {
+void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
     try {
         // Continue running until told to terminate AND queue is empty
         while (!should_terminate || !task_queue.empty()) {
@@ -495,7 +493,7 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal>& task_queue, s
             }
             // If no task was retrieved, loop will continue checking
         }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         // Log any thread errors
         printError("Image writer thread error: " + std::string(e.what()));
     }
@@ -505,7 +503,7 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal>& task_queue, s
  * Main function that handles the conversion of a file to a series of BMP images.
  * The file is split into chunks, each chunk is processed in parallel, and
  * the resulting BMP images contain the original file data.
- * 
+ *
  * @param input_file Path to the file to convert
  * @param output_base Base name for output BMP files
  * @param maxChunkSizeMB Maximum size of each chunk in megabytes
@@ -513,10 +511,11 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal>& task_queue, s
  * @param maxMemoryMB Maximum memory usage in megabytes
  * @return True if conversion was successful, false otherwise
  */
-bool parseToImage(const std::string& input_file, const std::string& output_base, int maxChunkSizeMB, int maxThreads, int maxMemoryMB) {
+bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
+                  int maxMemoryMB) {
     try {
         // Initialize and configure resource manager
-        auto& resManager = ResourceManager::getInstance();
+        auto &resManager = ResourceManager::getInstance();
 
         // Configure thread pool size
         if (maxThreads > 0) {
@@ -545,8 +544,8 @@ bool parseToImage(const std::string& input_file, const std::string& output_base,
                      " threads, " + std::to_string(resManager.getMaxMemory() / (1024 * 1024)) + " MB memory");
 
         // Use references to avoid unnecessary copies
-        const std::string& cleanInputPath = input_file;
-        const std::string& cleanOutputPath = output_base;
+        const std::string &cleanInputPath = input_file;
+        const std::string &cleanOutputPath = output_base;
 
         // Validate input file
         if (!std::filesystem::exists(cleanInputPath)) {
@@ -577,12 +576,12 @@ bool parseToImage(const std::string& input_file, const std::string& output_base,
 
         // Calculate how many chunks we'll need based on chunk size
         auto total_chunks = (file_size + chunk_size - 1) / chunk_size;
-        
+
         // Log input/output information
         printFilePath("Input: " + cleanInputPath);
         printFilePath("Output: " + cleanOutputPath);
-        printStats("File size: " + std::to_string(file_size) + " bytes, Chunks: " + std::to_string(total_chunks) + 
-                  ", Chunk size: " + std::to_string(chunk_size / (1024 * 1024)) + " MB");
+        printStats("File size: " + std::to_string(file_size) + " bytes, Chunks: " + std::to_string(total_chunks) +
+                   ", Chunk size: " + std::to_string(chunk_size / (1024 * 1024)) + " MB");
 
         // Create task queue for image processing
         // This queue will hold tasks that need to be written to disk
@@ -606,11 +605,11 @@ bool parseToImage(const std::string& input_file, const std::string& output_base,
             // Log which chunk we're processing
             auto chunkInfo = "Chunk " + std::to_string(i + 1) + " of " + std::to_string(total_chunks);
             printProcessingStep(chunkInfo);
-            
+
             // Run the chunk processing in a worker thread
             // The resource manager handles thread allocation and management
             resManager.runWithThread(processChunk, i, chunk_size, total_chunks, file_size,
-                                    input_file, output_base, std::ref(task_queue), max_image_file_size);
+                                     input_file, output_base, std::ref(task_queue), max_image_file_size);
 
             // Brief pause to allow thread initialization
             // This helps prevent thread creation overhead causing resource contention
@@ -631,8 +630,7 @@ bool parseToImage(const std::string& input_file, const std::string& output_base,
         // Log success and return
         printSuccess("File processing completed successfully");
         return true;
-
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         // Handle any exceptions and log the error
         printError("Error in parseToImage: " + std::string(e.what()));
         return false;
@@ -642,7 +640,7 @@ bool parseToImage(const std::string& input_file, const std::string& output_base,
 /**
  * Constructor for BitmapImage class.
  * Initializes a new bitmap image with the specified dimensions.
- * 
+ *
  * @param width Width of the image in pixels
  * @param height Height of the image in pixels
  */
@@ -655,14 +653,14 @@ BitmapImage::BitmapImage(int width, int height) {
 /**
  * Sets binary data into the pixel buffer at the specified offset.
  * This method is used to embed file data and metadata into the image pixels.
- * 
+ *
  * @param data Binary data to be embedded in the image
  * @param offset Starting position in the pixel buffer
  */
-void BitmapImage::setData(const std::vector<uint8_t>& data, size_t offset) {
+void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
     // Calculate how many bytes we can actually copy
     auto bytesToCopy = std::min(data.size(), pixels.size() - offset);
-    
+
     // Copy the data into the pixel buffer
     std::copy_n(data.begin(), bytesToCopy, pixels.begin() + offset);
 }
@@ -671,10 +669,10 @@ void BitmapImage::setData(const std::vector<uint8_t>& data, size_t offset) {
  * Saves the image to a BMP file.
  * This function handles the low-level details of writing the image data
  * to a file in the BMP format.
- * 
+ *
  * @param filename Path where the BMP file will be saved
  */
-void BitmapImage::save(const std::string& filename) {
+void BitmapImage::save(const std::string &filename) {
     try {
         // Open the output file in binary mode
         std::ofstream outFile(filename, std::ios::binary);
@@ -735,8 +733,8 @@ void BitmapImage::save(const std::string& filename) {
         infoHeader[23] = static_cast<unsigned char>(imageSize >> 24);
 
         // Write the file and info headers
-        outFile.write(reinterpret_cast<char*>(fileHeader), 14);
-        outFile.write(reinterpret_cast<char*>(infoHeader), 40);
+        outFile.write(reinterpret_cast<char *>(fileHeader), 14);
+        outFile.write(reinterpret_cast<char *>(infoHeader), 40);
 
         // Write the image data
         unsigned char padding[3] = {0, 0, 0};
@@ -747,15 +745,15 @@ void BitmapImage::save(const std::string& filename) {
                     pixels[(y * width + x) * 3 + 1],
                     pixels[(y * width + x) * 3]
                 };
-                outFile.write(reinterpret_cast<char*>(color), 3);
+                outFile.write(reinterpret_cast<char *>(color), 3);
             }
 
-            outFile.write(reinterpret_cast<char*>(padding), paddingSize);
+            outFile.write(reinterpret_cast<char *>(padding), paddingSize);
         }
 
         outFile.close();
         printMessage("Successfully saved " + filename);
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
         printError("Error saving bitmap: " + std::string(e.what()));
     } catch (...) {
         printError("Unknown error while saving bitmap");
