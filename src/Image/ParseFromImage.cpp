@@ -9,10 +9,6 @@
 #include <cctype>
 #include <map>
 #include <optional>
-#include <ranges>
-#include <string_view>
-#include <iomanip>
-#include <sstream>
 #include "headers/ParseFromImage.h"
 
 #include <future>
@@ -21,7 +17,6 @@
 #include "headers/ResourceManager.h"
 #include "../Debug/headers/Debug.h"
 
-// No need for local printing functions - use the global ones from debug.h
 namespace image_parser {
     /**
      * Get the size of a file in bytes.

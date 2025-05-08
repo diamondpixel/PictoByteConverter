@@ -214,6 +214,18 @@ Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
 - Careful handling of data integrity with size validation
 - Advanced resource management to prevent memory issues with large files
 
+## Performance and Safety Features - TO BE ADDED
+- Stream file I/O in fixed-size chunks to cap peak memory
+- Memory-map large files to reduce heap usage and copies
+- Pre-allocate and reuse pixel buffers instead of per-image reallocations
+- Move BitmapImage into queues to avoid deep copies of pixel data
+- Resize pixel vector and use memcpy instead of push_back loops
+- Enforce ResourceManager limits before spawning processing threads
+- Use a thread pool instead of spawning per-chunk threads for control
+- Spill tasks to disk-backed queue when memory limit is reached
+- Catch std::bad_alloc on all allocations for graceful failure
+- Reduce mutex contention in ThreadSafeQueue or use lock-free structures
+
 ## Building from Source
 
 ### Prerequisites
