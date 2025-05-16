@@ -167,9 +167,6 @@ int main(int argc, char* argv[]) {
             printFilePath("Input: " + inputFile);
             printFilePath("Output: " + outputFile);
             success = parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB);
-            if (success) {
-                printSuccess("File successfully converted to image!");
-            }
             break;
         case 1:
             printProcessingStep("Extracting file from image...");

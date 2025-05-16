@@ -6,11 +6,22 @@
 #include <mutex>
 #include <atomic>
 
+// Define an export/import macro for Windows DLLs
+#if defined(_WIN32) || defined(_WIN64)
+    #ifdef PICTOBYTE_DLL_EXPORTS // This should be defined by CMake when compiling the pictobyte DLL
+        #define PICTOBYTE_API __declspec(dllexport)
+    #else // This will be used by code consuming the DLL (like ConvertToImage.exe)
+        #define PICTOBYTE_API __declspec(dllimport)
+    #endif
+#else // For non-Windows platforms, the macro does nothing
+    #define PICTOBYTE_API
+#endif
+
 // Global debug mode flag - atomic for thread safety
-extern std::atomic<bool> gDebugMode;
+extern PICTOBYTE_API std::atomic<bool> gDebugMode;
 
 // Mutex for synchronized console output
-extern std::mutex gConsoleMutex;
+extern PICTOBYTE_API std::mutex gConsoleMutex;
 
 // Color enum for Windows-compatible console coloring
 enum class ANSIColor {
