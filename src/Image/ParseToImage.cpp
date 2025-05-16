@@ -1,8 +1,17 @@
 /*
  * ParseToImage.cpp
- * This file contains the implementation for converting binary data into bitmap images
- * and back. It provides functionality to split large files into multiple chunks,
- * encode them as bitmap images, and process them with resource management.
+ * This file implements the core logic for converting large binary files into a series of 
+ * bitmap (BMP) images. It is designed to handle files that may exceed typical memory limits 
+ * by splitting them into manageable chunks. Each chunk, along with essential metadata, 
+ * is then encoded into a BMP image.
+ *
+ * Key functionalities include:
+ * - Memory-mapping input files for efficient read access to large file data.
+ * - Calculating optimal dimensions for BMP images to store data chunks while adhering to specified maximum file size constraints.
+ * - Embedding the actual data chunk and relevant metadata (such as original filename, chunk index, total chunks, and data size) into the pixel data of the BMP image.
+ * - Managing a pool of worker threads to process multiple chunks concurrently, improving performance for large files.
+ * - Utilizing a thread-safe queue to manage image saving tasks, thereby decoupling CPU-intensive image processing from I/O-bound disk writing operations.
+ * - Constructing and writing BMP file headers (BITMAPFILEHEADER and BITMAPINFOHEADER) and pixel data according to the BMP format specification.
  */
 
 #include <string>        // For string operations and filename handling
@@ -27,127 +36,174 @@
 #include "../Debug/headers/Debug.h"     // Debugging and logging utilities
 #include "headers/ImageProcessingTypes.h" // Moved class definitions
 
-// Define DEFAULT_MAX_IMAGE_SIZE here
+// Define DEFAULT_MAX_IMAGE_SIZE here. This constant specifies the default upper limit
+// for the size of any single generated BMP image file. It helps in managing output file sizes
+// and preventing excessively large images. This value can be overridden by user-provided parameters
+// if the application's interface supports it.
 constexpr size_t DEFAULT_MAX_IMAGE_SIZE = 100 * 1024 * 1024; // 100MB
 
 /**
- * Calculates optimal rectangular dimensions for a bitmap that needs to store a specific
- * amount of data while respecting maximum file size constraints.
+ * @brief Calculates optimal rectangular dimensions for a bitmap image.
+ * 
+ * This function determines the most suitable width and height for a BMP image that needs to store a 
+ * given amount of `total_bytes` data. The calculation aims to:
+ * 1. Ensure the image has enough pixel capacity for `total_bytes`.
+ * 2. Ensure the final BMP file (including headers, pixel data, and row padding) does not exceed `max_size_bytes`.
+ * 3. Optionally, try to maintain a desired `aspect_ratio` for the image dimensions.
  *
- * @param total_bytes Total bytes of data to store in the image
- * @param bytes_per_pixel Number of bytes per pixel (typically 3 for RGB)
- * @param bmp_header_size Size of the BMP header in bytes
- * @param max_size_bytes Maximum allowed file size in bytes
- * @param aspect_ratio Desired width:height ratio (default 1.0 for square)
- * @return A pair of width and height dimensions
+ * The process involves considering the BMP header size, bytes per pixel, and the BMP format's requirement 
+ * for row padding (each row's byte count must be a multiple of 4). It uses an iterative approach to 
+ * adjust dimensions to meet all constraints, prioritizing data integrity (not truncating `total_bytes`) 
+ * and then the `max_size_bytes` limit.
+ *
+ * @param total_bytes The total number of payload bytes (e.g., file chunk data + metadata) that needs to be stored 
+ *                    within the image's pixel data area.
+ * @param bytes_per_pixel The number of bytes used to represent a single pixel in the image (e.g., 3 for 24-bit RGB).
+ * @param bmp_header_size The fixed size of the BMP file header and info header in bytes (typically 54 bytes).
+ * @param max_size_bytes The maximum permissible size for the resulting BMP file, including all headers, 
+ *                       pixel data, and padding. This is a hard limit the function tries to adhere to.
+ * @param aspect_ratio The desired width-to-height ratio for the image (e.g., 1.0f for a square image). 
+ *                     Defaults to 1.0f.
+ * @return A `std::pair<size_t, size_t>` containing the calculated optimal width and height. 
+ *         Returns `{0, 0}` if no valid dimensions can be found that satisfy all constraints 
+ *         (i.e., cannot fit `total_bytes` within `max_size_bytes` or other logical failures).
  */
 std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, size_t bytes_per_pixel,
                                                          size_t bmp_header_size,
                                                          size_t max_size_bytes, float aspect_ratio = 1.0f) {
-    // Estimate minimum possible image size for total_bytes (excluding variable padding)
+    // Estimate the minimum possible size of the image data payload itself. This is just the raw data bytes.
     size_t min_data_payload_size = total_bytes;
+    // Calculate the theoretical minimum file size: header + raw data payload. This doesn't account for BMP row padding yet.
     size_t min_possible_image_file_size = bmp_header_size + min_data_payload_size;
 
+    // Quick check: If max_size_bytes is less than even this highly optimistic minimum, it's impossible.
     if (max_size_bytes < min_possible_image_file_size) {
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: max_size_bytes (" << max_size_bytes
-                    << ") is less than min required image file size (" << min_possible_image_file_size
+                    << ") is less than min required theoretical image file size (" << min_possible_image_file_size
                     << ") for data payload (" << total_bytes << " bytes). Returning {0,0}.";
             printWarning(oss.str());
         }
-        return {0, 0};
+        return {0, 0}; // Cannot fit data even in the most ideal scenario.
     }
 
-    // Add buffer for ensuring all data fits with no truncation
-    // Extra 500 pixels provide safety margin for rounding errors
+    // Calculate the total number of pixels required to store `total_bytes` of data.
+    // The `(bytes_per_pixel - 1)` part ensures ceiling division: if `total_bytes` is not a perfect multiple
+    // of `bytes_per_pixel`, we allocate enough pixels for the remainder.
+    // The `+ 500` pixels act as a safety margin. This buffer helps to:
+    //   a) Accommodate potential BMP row padding, which can consume extra space not directly used by the payload data.
+    //   b) Mitigate issues arising from discrete pixel dimensions (integer width/height) not perfectly matching continuous data needs.
+    //   c) Provide a small leeway for potential header variations (though `bmp_header_size` should be fixed) or other minor overheads.
     size_t total_pixels = (total_bytes + bytes_per_pixel - 1) / bytes_per_pixel + 500;
 
-    // Calculate initial dimensions based on desired aspect ratio
+    // Calculate initial width and height based on the total pixels needed and the desired aspect ratio.
+    // The formulas are derived from: total_pixels = width * height and aspect_ratio = width / height.
+    // So, width = sqrt(total_pixels * aspect_ratio) and height = width / aspect_ratio (or sqrt(total_pixels / aspect_ratio)).
     auto width = static_cast<size_t>(std::sqrt(static_cast<double>(total_pixels * aspect_ratio)));
-    auto height = static_cast<size_t>(width / aspect_ratio);
+    auto height = static_cast<size_t>(width / aspect_ratio); // More numerically stable to calculate height from width if aspect_ratio is not 1.
 
-    // Ensure dimensions provide enough pixels for all data
-    // This loop increases dimensions until they can accommodate all data
-    int emergency_break_initial_sizing = 10000; // Prevent infinite loop on weird inputs
+    // Ensure initial dimensions provide enough pixels for all data.
+    // This loop iteratively increases dimensions (primarily width, then height via aspect ratio) if the initial calculation (width * height) is insufficient.
+    int emergency_break_initial_sizing = 10000; // Safeguard against excessively long loops due to unusual inputs or floating point inaccuracies.
     while (width * height < total_pixels) {
-        width++;
-        height = static_cast<size_t>(width / aspect_ratio);
+        width++; // Increment width slightly.
+        height = static_cast<size_t>(width / aspect_ratio); // Recalculate height to maintain the aspect ratio.
+        
+        // Safety check: if dimensions become invalid (e.g., height becomes zero due to extreme aspect_ratio or width hitting limits)
+        // or if the loop runs too many times, abort.
         if (width == 0 || height == 0 || --emergency_break_initial_sizing <= 0) {
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
-                oss << "calculateOptimalRectDimensions: Initial sizing loop failed or safety break. W:" << width <<
-                        " H:" << height;
+                oss << "calculateOptimalRectDimensions: Initial sizing loop failed or hit safety break. W:" << width <<
+                        " H:" << height << " TotalPixelsRequired: " << total_pixels;
                 printWarning(oss.str());
             }
-            return {0, 0};
+            return {0, 0}; // Failed to find suitable initial dimensions.
         }
     }
 
-    // Enforce minimum dimensions for practical reasons
-    constexpr size_t min_dimension = 64;
+    // Enforce minimum practical dimensions for the bitmap.
+    // Very small images (e.g., 1x1) might be unusable or cause issues with some image viewers/libraries.
+    constexpr size_t min_dimension = 64; // A reasonable minimum dimension (e.g., 64 pixels).
     if (width < min_dimension) width = min_dimension;
     if (height < min_dimension) height = min_dimension;
 
-    constexpr size_t max_bitmap_dimension = 65535;
+    // Enforce maximum dimensions, typically limited by BMP format specifications (e.g., max value for WORD type in headers, often 65535)
+    // or practical constraints (e.g., system resources, display capabilities of image viewers).
+    constexpr size_t max_bitmap_dimension = 65535; // Maximum dimension for BMP (often tied to 16-bit fields in headers).
     if (width > max_bitmap_dimension) width = max_bitmap_dimension;
     if (height > max_bitmap_dimension) height = max_bitmap_dimension;
 
-    // Ensure again that after clamping, we can still hold the data (pixels perspective)
+    // After clamping dimensions to min/max boundaries, re-check if they can still hold the required `total_pixels`.
+    // Clamping might have reduced the pixel count below what's needed.
     if (width * height < total_pixels) {
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Dimensions " << width << "x" << height
-                    << " (clamped by min/max) cannot hold total_pixels " << total_pixels << ". Returning {0,0}.";
+                    << " (clamped by min/max values) cannot hold total_pixels " << total_pixels << ". Returning {0,0}.";
             printWarning(oss.str());
         }
-        return {0, 0};
+        return {0, 0}; // Clamped dimensions are too small for the pixel data.
     }
 
-    // Calculate row padding and actual file size
-    size_t row_bytes = width * bytes_per_pixel;
-    size_t padding = (4 - (row_bytes % 4)) % 4;
-    size_t actual_image_size = bmp_header_size + (height * (row_bytes + padding));
+    // Calculate the actual file size based on the current width, height, and BMP padding requirements.
+    // BMP format requires each row of pixel data to be padded to a multiple of 4 bytes.
+    size_t row_bytes_unpadded = width * bytes_per_pixel;              // Bytes for pixel data in one row, without padding.
+    size_t padding_per_row = (4 - (row_bytes_unpadded % 4)) % 4;    // Bytes needed to pad one row to a multiple of 4.
+    size_t row_bytes_padded = row_bytes_unpadded + padding_per_row; // Total bytes for one padded row.
+    size_t actual_image_size = bmp_header_size + (height * row_bytes_padded); // Total file size.
 
-    // Shrink dimensions if image would exceed max size
-    int emergency_break_shrinking = 10000; // Prevent infinite loop
+    // Iteratively shrink dimensions if the calculated `actual_image_size` exceeds `max_size_bytes`.
+    // This loop attempts to reduce dimensions (and thus file size) while ensuring:
+    //   1. Dimensions do not go below `min_dimension`.
+    //   2. The capacity (width * height * bytes_per_pixel) still remains sufficient for `total_bytes` (with a small safety buffer).
+    int emergency_break_shrinking = 10000; // Safeguard against excessively long loops.
     while (actual_image_size > max_size_bytes && width > min_dimension && height > min_dimension) {
         if (--emergency_break_shrinking <= 0) {
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
-                oss << "calculateOptimalRectDimensions: Shrinking loop safety break. AIS:" << actual_image_size <<
-                        " MSB:" << max_size_bytes;
+                oss << "calculateOptimalRectDimensions: Shrinking loop safety break. ActualImageSize:" << actual_image_size <<
+                        " MaxSizeBytes:" << max_size_bytes;
                 printWarning(oss.str());
             }
-            break; // Exit loop, proceed to final checks
+            break; // Exit shrinking loop and proceed to final checks with current dimensions.
         }
 
         size_t old_width = width;
         size_t old_height = height;
 
-        // Check if current capacity is already too close to total_bytes before shrinking further
-        // This is a heuristic; a perfect check is hard due to padding.
+        // Heuristic: Check if current pixel capacity is getting critically close to the required data payload.
+        // If `width * height * bytes_per_pixel` is only slightly larger than `total_bytes`,
+        // further shrinking might make it impossible to store the actual data, even if the file size constraint is met.
+        // The `bytes_per_pixel * 100` term acts as a small buffer (e.g., 300 bytes for 3BPP, or about 100 pixels).
+        // It's generally better to slightly exceed `max_size_bytes` (if unavoidable and allowed by subsequent checks)
+        // than to truncate or be unable to store the data payload.
         if (width * height * bytes_per_pixel < total_bytes + (bytes_per_pixel * 100)) {
-            // if capacity is within 100 pixels of data, be careful
+            // If current pixel capacity is within a small margin (e.g., ~100 pixels worth of data) of the required payload,
+            // be very cautious with further shrinking as it might compromise data storage.
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
-                oss << "calculateOptimalRectDimensions: Shrinking might compromise data capacity. W:" << width << " H:"
-                        << height
-                        << " DataBytes: " << total_bytes << " MaxSizeBytes: " << max_size_bytes;
-                printDebug(oss.str()); // Using printDebug for INFO
+                oss << "calculateOptimalRectDimensions: Shrinking might compromise data capacity. Current W:" << width << " H:"
+                        << height << ". TotalBytes: " << total_bytes << ". MaxSizeBytes: " << max_size_bytes;
+                printDebug(oss.str()); // Log as INFO/Debug level, not a warning yet.
             }
-            //  It's better to fail the max_size_bytes constraint than to corrupt data. So break and let final checks handle it.
-            break;
+            // It's better to potentially fail the `max_size_bytes` constraint (and let final checks handle it)
+            // than to risk making dimensions too small to hold the actual `total_bytes` payload.
+            break; // Stop shrinking.
         }
 
+        // Preferentially shrink the larger dimension to better maintain the aspect ratio (or get closer to square if aspect_ratio was ~1.0).
         if (width > height) {
             width--;
         } else {
             height--;
         }
 
+        // If dimensions didn't change (e.g., both are at `min_dimension`, or one hit `min_dimension` and the other couldn't be reduced further based on aspect ratio),
+        // break the loop to avoid getting stuck.
         if (width == old_width && height == old_height) {
-            // No change, stuck
+            // No change in dimensions, implies we are stuck (e.g., at min_dimension or constrained by aspect ratio at min_dimension).
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
                 oss << "calculateOptimalRectDimensions: Shrinking loop stuck. W:" << width << " H:" << height;
@@ -156,50 +212,70 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
             break;
         }
 
-        row_bytes = width * bytes_per_pixel;
-        padding = (4 - (row_bytes % 4)) % 4;
-        actual_image_size = bmp_header_size + (height * (row_bytes + padding));
+        // Recalculate image size with the new (shrunken) dimensions.
+        row_bytes_unpadded = width * bytes_per_pixel;
+        padding_per_row = (4 - (row_bytes_unpadded % 4)) % 4;
+        row_bytes_padded = row_bytes_unpadded + padding_per_row;
+        actual_image_size = bmp_header_size + (height * row_bytes_padded);
     }
 
-    // Final check: Can the chosen dimensions actually hold the data?
+    // Final critical check 1: Can the chosen dimensions (after all adjustments) actually hold the `total_bytes` data payload?
+    // This ensures that data isn't truncated due to dimension calculations, clamping, or shrinking attempts.
+    // The condition `width * height * bytes_per_pixel` represents the raw pixel data capacity, which must be >= `total_bytes`.
     if (width == 0 || height == 0 || width * height * bytes_per_pixel < total_bytes) {
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Final dimensions " << width << "x" << height
-                    << " are too small for data_payload (" << total_bytes <<
+                    << " (raw pixel capacity " << (width * height * bytes_per_pixel) << " bytes) are too small for data_payload (" << total_bytes <<
                     " bytes) after attempting to meet max_size_bytes "
                     << max_size_bytes << ". Returning {0,0}.";
             printWarning(oss.str());
         }
-        return {0, 0};
+        return {0, 0}; // Chosen dimensions are insufficient for the data payload.
     }
 
-    // Another check: does it now respect max_size_bytes? If not, it was impossible to satisfy both.
+    // Final critical check 2: Does the image file (with chosen dimensions, headers, and padding) respect the `max_size_bytes` constraint?
+    // If this fails, it means it was impossible to satisfy both the data capacity requirement and the file size limit with valid dimensions.
     if (actual_image_size > max_size_bytes) {
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Final dimensions " << width << "x" << height
-                    << " (image file size " << actual_image_size << " bytes) still exceed max_size_bytes ("
+                    << " (actual image file size " << actual_image_size << " bytes) still exceed max_size_bytes (" 
                     << max_size_bytes << "). Data payload was " << total_bytes << " bytes. Returning {0,0}.";
             printWarning(oss.str());
         }
-        return {0, 0};
+        return {0, 0}; // Cannot meet max file size constraint even with dimensions sufficient for data capacity.
     }
 
+    // If all checks pass, the calculated width and height are considered valid and optimal under the given constraints.
     return {width, height};
 }
 
 /**
- * Optimizes dimensions specifically for the last image, which may have different
- * requirements than regular chunks. The last image might contain metadata or
- * have special handling requirements.
+ * @brief Optimizes dimensions specifically for the last image in a sequence of chunked images.
+ * 
+ * The last image in a series (when a large file is split into multiple image chunks)
+ * might have different sizing considerations. For instance, it might contain a smaller final
+ * data segment or primarily consist of metadata. This function is similar to 
+ * `calculateOptimalRectDimensions` but might be tailored for scenarios where `total_bytes` 
+ * is relatively small (e.g., mostly metadata or a small remaining data part).
  *
- * @param total_bytes Total bytes of data to store
- * @param bytes_per_pixel Number of bytes per pixel
- * @param metadata_size Size of metadata to be included
- * @param bmp_header_size Size of the BMP header in bytes
- * @param aspect_ratio Desired width:height ratio
- * @return A pair of width and height dimensions
+ * A key difference or consideration here is how `max_size_bytes` (if applicable implicitly or via a default)
+ * is handled for the last chunk. Typically, the last chunk has more flexibility as it doesn't need to 
+ * reserve space for subsequent full-sized chunks.
+ * This function aims to find compact yet sufficient dimensions for the `total_bytes` (data + metadata).
+ *
+ * @param total_bytes Total bytes of data (this should include actual data from the original file segment 
+ *                    AND any metadata being embedded) to store in this last image.
+ * @param bytes_per_pixel Number of bytes per pixel (e.g., 3 for 24-bit RGB).
+ * @param metadata_size Size of the metadata portion that is included within `total_bytes`. This parameter 
+ *                      might be used for more nuanced calculations or logging, but `total_bytes` is the 
+ *                      primary driver for pixel capacity.
+ * @param bmp_header_size Size of the BMP file and info headers in bytes (typically 54 bytes).
+ * @param aspect_ratio Desired width:height ratio for the image (e.g., 1.0f for a square). Defaults to 1.0f.
+ * @return A `std::pair<size_t, size_t>` containing the calculated width and height.
+ *         Returns `{0,0}` if valid dimensions cannot be found (e.g., if `total_bytes` is excessively large 
+ *         for reasonable image dimensions or if internal logic fails).
  */
 std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t metadata_size,
                                                       size_t bmp_header_size, float aspect_ratio = 1.0f) {
@@ -232,20 +308,33 @@ std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t
 }
 
 /**
- * Processes a single chunk of the input file, converting it to a bitmap image.
- * Each chunk includes metadata about the original file and chunk position.
- * This function handles the core logic of reading a file segment, adding
- * metadata headers, and preparing the image for storage.
+ * @brief Processes a single chunk of an input file and prepares it for conversion into a bitmap image.
  *
- * @param chunk_index Index of the current chunk (0-based)
- * @param chunk_data_max_size Maximum size of data for this chunk from original file
- * @param total_chunks Total number of chunks in the file
- * @param original_file_total_size Original total file size in bytes
- * @param all_file_data_ptr Pointer to the start of the memory-mapped input file data
- * @param original_input_filepath Path to the original input file (for metadata/logging)
- * @param output_base_path Base path for output images
- * @param image_task_queue Thread-safe queue for writer tasks
- * @param max_image_file_size_param Maximum size in bytes for output image files
+ * This function is a core part of the file-to-image conversion pipeline. It takes a segment (chunk)
+ * of the memory-mapped input file data (`all_file_data_ptr` + offset and length), constructs a metadata 
+ * header specific to this chunk (containing information like original filename, chunk index, total chunks, 
+ * and data size of this chunk), and combines this metadata with the actual chunk data. 
+ * It then calculates the optimal dimensions for a BMP image that can store this combined payload, 
+ * respecting `max_image_file_size_param`.
+ * Finally, it creates a `BitmapImage` object, populates it with the header and chunk data, and queues an 
+ * `ImageTaskInternal` (containing the image and output filename) for asynchronous writing to disk by 
+ * a separate writer thread.
+ *
+ * @param chunk_index The 0-based index of the current chunk being processed from the original file.
+ * @param chunk_data_max_size The pre-calculated maximum size of original file data that each chunk (except possibly the last) 
+ *                            should contain. The actual data read for this specific chunk might be less if it's the last one.
+ * @param total_chunks The total number of chunks the original input file has been divided into.
+ * @param original_file_total_size The total size of the original input file in bytes.
+ * @param all_file_data_ptr A pointer to the beginning of the memory-mapped data of the entire input file.
+ *                          This allows direct access to any part of the file's content without repeated reads.
+ * @param original_input_filepath The full path to the original input file (used for extracting filename for metadata).
+ * @param output_base_path The base directory and filename prefix where output BMP images will be saved. 
+ *                         The chunk index and total chunks will be appended to this base to form unique filenames.
+ * @param image_task_queue A reference to a thread-safe queue. `ImageTaskInternal` objects, ready for saving to disk, 
+ *                         are pushed onto this queue. This allows image saving to be handled by a dedicated writer thread, 
+ *                         decoupling it from the chunk processing logic.
+ * @param max_image_file_size_param The maximum allowed size for any single generated BMP image file in bytes. 
+ *                                  This is passed to `calculateOptimalRectDimensions` or `optimizeLastImageDimensions`.
  */
 void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chunks, size_t original_file_total_size,
                   const unsigned char *all_file_data_ptr, const std::string &original_input_filepath,
@@ -529,11 +618,17 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
 }
 
 /**
- * Saves an image task to disk as a BMP file.
- * This function encapsulates the process of saving an image to disk,
- * with appropriate error handling.
+ * @brief Saves a `BitmapImage` (encapsulated within an `ImageTaskInternal`) to disk as a BMP file.
  *
- * @param task The image task containing the filename and bitmap image
+ * This function is typically called by the dedicated image writer thread (`imageWriterThread`).
+ * It receives an `ImageTaskInternal` object, which contains both the `BitmapImage` data to be saved
+ * and the target output filename. The function then invokes the `save` method of the `BitmapImage` class,
+ * which handles the low-level details of writing the BMP headers and pixel data to the specified file.
+ * Includes basic error handling for the save operation and logs success or failure.
+ *
+ * @param task A constant reference to the `ImageTaskInternal` object. This object contains the 
+ *             `BitmapImage` (which itself holds pixel data and dimensions) and the `filename` 
+ *             where the image should be saved.
  */
 void saveImage(const ImageTaskInternal &task) {
     try {
@@ -552,12 +647,21 @@ void saveImage(const ImageTaskInternal &task) {
 }
 
 /**
- * Background thread that waits for image tasks and saves them to disk.
- * Continues running until explicitly terminated and queue is empty.
- * This thread is responsible for handling all disk I/O operations to save images.
+ * @brief Function executed by the dedicated image writer thread.
  *
- * @param task_queue Thread-safe queue containing image tasks to process
- * @param should_terminate Atomic flag indicating whether the thread should exit
+ * This thread continuously monitors the `task_queue` for `ImageTaskInternal` objects. 
+ * When a task becomes available (i.e., a processed chunk is ready to be saved as an image),
+ * this thread dequeues it and calls the `saveImage` function to write the corresponding BMP image to disk.
+ * The thread continues to run and process tasks until the `should_terminate` flag is set to `true` 
+ * AND the `task_queue` becomes empty, ensuring all pending images are saved before exiting.
+ * This design decouples image processing (which can be CPU-bound) from image saving (which is I/O-bound),
+ * potentially improving overall application throughput and responsiveness.
+ *
+ * @param task_queue A reference to the thread-safe queue (`ThreadSafeQueueTemplate<ImageTaskInternal>`) 
+ *                   from which image saving tasks are retrieved.
+ * @param should_terminate An atomic boolean flag. When the main processing logic decides that no more tasks 
+ *                         will be added and work is complete, it sets this flag to `true`. The writer thread 
+ *                         will then finish processing any remaining items in the queue and subsequently terminate.
  */
 void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
     try {
@@ -578,16 +682,34 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
 }
 
 /**
- * Main function that handles the conversion of a file to a series of BMP images.
- * The file is split into chunks, each chunk is processed in parallel, and
- * the resulting BMP images contain the original file data.
+ * @brief Main function to orchestrate the conversion of an input file into a series of BMP images.
  *
- * @param input_file Path to the file to convert
- * @param output_base Base name for output BMP files
- * @param maxChunkSizeMB Maximum size of each chunk in megabytes
- * @param maxThreads Maximum number of processing threads to use
- * @param maxMemoryMB Maximum memory usage in megabytes
- * @return True if conversion was successful, false otherwise
+ * This function manages the entire file-to-image conversion process. Its responsibilities include:
+ * 1. Validating the input file and parameters.
+ * 2. Opening and memory-mapping the input file for efficient random access to its data.
+ * 3. Calculating the number of chunks the input file will be divided into, based on `maxChunkSizeMB` and the total file size.
+ * 4. Initializing a `ResourceManager` to manage and limit system resources like threads and memory used by the application.
+ * 5. Setting up a thread pool (via `ResourceManager`) for concurrent processing of chunks and a dedicated image writer thread.
+ * 6. Iterating through the calculated chunks of the input file:
+ *    - For each chunk, it prepares parameters and dispatches a `processChunk` task to a worker thread from the pool.
+ *    - `processChunk` will read data, create metadata, determine image dimensions, build the `BitmapImage`, and queue it.
+ * 7. Waiting for all chunk processing tasks and image writing tasks to complete.
+ * 8. Performing cleanup operations, such as unmapping the input file and ensuring all threads are properly joined.
+ *
+ * The output consists of one or more BMP images. Each image contains a segment of the original file's data, 
+ * along with embedded metadata necessary for potential reassembly of the original file from these images.
+ *
+ * @param input_file The path to the binary file that needs to be converted into BMP images.
+ * @param output_base The base name (and potentially path) for the output BMP files. A chunk index and total chunk count 
+ *                    (e.g., "_1ofN.bmp") will be appended to this base to create unique filenames for each image chunk.
+ * @param maxChunkSizeMB The maximum desired size for each data chunk (extracted from the original file) in megabytes. 
+ *                       The actual BMP image file size might be larger due to BMP overhead (headers, padding) and embedded metadata.
+ * @param maxThreads The maximum number of worker threads to use for processing file chunks concurrently. 
+ *                   If non-positive, a default (often based on hardware concurrency) might be used.
+ * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes. This is used by the 
+ *                    `ResourceManager` to throttle operations if memory limits are approached.
+ * @return `true` if the conversion process completes successfully and all chunks are processed and saved. 
+ *         `false` otherwise (e.g., if the input file is not found, memory allocation errors occur, or other critical failures).
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
                   int maxMemoryMB) {
@@ -892,7 +1014,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
 }
 
 /**
- * Constructor for BitmapImage class.
+ * @brief Constructor for the `BitmapImage` class.
+ *
  * Initializes a new bitmap image with the specified dimensions.
  *
  * @param width Width of the image in pixels
@@ -905,7 +1028,8 @@ BitmapImage::BitmapImage(int width, int height) {
 }
 
 /**
- * Sets binary data into the pixel buffer at the specified offset.
+ * @brief Sets binary data into the pixel buffer at the specified offset.
+ *
  * This method is used to embed file data and metadata into the image pixels.
  *
  * @param data Binary data to be embedded in the image
@@ -920,7 +1044,8 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
 }
 
 /**
- * Saves the image to a BMP file.
+ * @brief Saves the image to a BMP file.
+ *
  * This function handles the low-level details of writing the image data
  * to a file in the BMP format.
  *
@@ -973,8 +1098,8 @@ void BitmapImage::save(const std::string &filename) {
     // Calculate row padding and actual file size
     const size_t bytes_per_pixel = 3; // For 24-bit BMP
     size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
-    size_t padding_size = (4 - (data_row_size % 4)) % 4;
-    size_t row_stride_in_file = data_row_size + padding_size; // Size of one row in the BMP file (data + padding)
+    size_t padding = (4 - (data_row_size % 4)) % 4;
+    size_t row_stride_in_file = data_row_size + padding; // Size of one row in the BMP file (data + padding)
     size_t actual_image_data_on_disk_size = static_cast<size_t>(height) * row_stride_in_file;
     size_t total_file_size = sizeof(bfh) + sizeof(bih) + actual_image_data_on_disk_size;
 
@@ -1030,8 +1155,8 @@ void BitmapImage::save(const std::string &filename) {
             file.write(reinterpret_cast<const char *>(pixel_output_buffer), bytes_per_pixel);
         }
         // After writing all pixels for a row, write padding if any.
-        if (padding_size > 0) {
-            file.write(reinterpret_cast<const char *>(row_padding_buffer), padding_size);
+        if (padding > 0) {
+            file.write(reinterpret_cast<const char *>(row_padding_buffer), padding);
         }
     }
 

@@ -120,9 +120,9 @@ private:
 class BitmapImage {
 public:
     BitmapImage() : width(0), height(0) {}
-    BitmapImage(int width, int height); // Definition in ParseToImage.cpp
-    void setData(const std::vector<uint8_t> &data, size_t offset); // Definition in ParseToImage.cpp
-    void save(const std::string &filename); // Definition in ParseToImage.cpp
+    BitmapImage(int width, int height);
+    void setData(const std::vector<uint8_t> &data, size_t offset);
+    void save(const std::string &filename);
     ~BitmapImage() = default;
 
     bool serialize(std::ostream &os) const {
