@@ -655,6 +655,24 @@ namespace image_parser {
             return false;
         }
 
+        // Determine the actual total number of chunks from metadata
+        // Assumes all ChunkInfo objects will have the same 'total_chunks_in_file' for a given file set.
+        // And that ChunkInfo has a member 'total_chunks_in_file'.
+        int actual_total_chunks = 0;
+        if (!chunks.empty()) {
+            // Get it from the first available chunk's metadata.
+            // It's assumed ChunkInfo struct has a 'total_chunks_in_file' field.
+            // And chunk_index is 0-based.
+            actual_total_chunks = chunks.begin()->second.totalChunks;
+        }
+
+        if (actual_total_chunks <= 0) {
+            printError("Could not determine total number of chunks from metadata, or it's invalid.");
+            // This might happen if ChunkInfo doesn't have total_chunks_in_file or it's not set.
+            // Fallback or different error handling might be needed if this assumption is wrong.
+            return false; 
+        }
+
         try {
             std::ofstream outfile(output_filename, std::ios::binary | std::ios::trunc);
             if (!outfile) {
@@ -664,48 +682,46 @@ namespace image_parser {
 
             // Get total expected size
             size_t total_expected_size = 0;
-            size_t processed_chunks = 0;
+            size_t processed_chunks_count = chunks.size(); // Use map size for processed count
             
             for (const auto &chunk_pair : chunks) {
                 const auto &chunk = chunk_pair.second;
                 total_expected_size += chunk.payload.size();
-                processed_chunks++;
             }
 
-            // Check if we have all chunks
-            int highest_chunk_index = chunks.rbegin()->first;
-
-            if (processed_chunks != static_cast<size_t>(highest_chunk_index)) {
-                printWarning("Missing chunks: processed " + std::to_string(processed_chunks) +
-                          " of " + std::to_string(highest_chunk_index) + " expected.");
+            // Check if we have all chunks based on metadata total
+            if (processed_chunks_count != static_cast<size_t>(actual_total_chunks)) {
+                printWarning("Missing chunks: processed " + std::to_string(processed_chunks_count) +
+                          " of " + std::to_string(actual_total_chunks) + " expected (from metadata).");
             }
 
             printMessage("Writing " + std::to_string(total_expected_size) + 
-                       " bytes from " + std::to_string(processed_chunks) + " chunks to " + 
+                       " bytes from " + std::to_string(processed_chunks_count) + " chunks to " + 
                        output_filename);
 
-            // Write each chunk in sequential order
+            // Write each chunk in sequential order (0 to N-1)
             size_t total_bytes_written = 0;
-            bool missing_chunks = false;
+            bool missing_chunks_flag = false; // Renamed to avoid conflict
 
             // Show a summary of chunk distribution at the start
             std::cout << ANSIColorConst::CYAN << "=== Chunk distribution summary ===" << ANSIColorConst::RESET << std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Total chunks:" << ANSIColorConst::RESET << " " 
-                      << ANSIColorConst::BRIGHT_YELLOW << highest_chunk_index << ANSIColorConst::RESET << std::endl;
-            if (chunks.size() < highest_chunk_index) {
-                std::cout << "  " << ANSIColorConst::RED << "Missing chunks:" << ANSIColorConst::RESET << " " 
-                          << ANSIColorConst::BRIGHT_RED << (highest_chunk_index - chunks.size()) << ANSIColorConst::RESET << std::endl;
+            std::cout << "  " << ANSIColorConst::GREEN << "Total chunks (from metadata):" << ANSIColorConst::RESET << " " 
+                      << ANSIColorConst::BRIGHT_YELLOW << actual_total_chunks << ANSIColorConst::RESET << std::endl;
+            if (chunks.size() < static_cast<size_t>(actual_total_chunks)) {
+                std::cout << "  " << ANSIColorConst::RED << "Missing chunks detected:" << ANSIColorConst::RESET << " " 
+                          << ANSIColorConst::BRIGHT_RED << (actual_total_chunks - chunks.size()) << ANSIColorConst::RESET << std::endl;
             }
             std::cout << ANSIColorConst::CYAN << "===============================" << ANSIColorConst::RESET << std::endl;
 
-            for (int i = 1; i <= highest_chunk_index; ++i) {
-                if (chunks.find(i) == chunks.end()) {
+            for (int i = 0; i < actual_total_chunks; ++i) { // Loop from 0 to N-1
+                auto it = chunks.find(i); // Keys in map are expected to be 0-indexed now
+                if (it == chunks.end()) {
                     printWarning("Missing chunk " + std::to_string(i) + " - output file may be corrupt");
-                    missing_chunks = true;
+                    missing_chunks_flag = true;
                     continue;
                 }
 
-                const auto &chunk = chunks.at(i);
+                const auto &chunk = it->second;
                 outfile.write(reinterpret_cast<const char *>(chunk.payload.data()),
                              static_cast<std::streamsize>(chunk.payload.size()));
                 
@@ -716,15 +732,15 @@ namespace image_parser {
                 
                 total_bytes_written += chunk.payload.size();
 
-                // Update progress more frequently - every 5 chunks instead of 10
-                if (i % 5 == 0 || i == highest_chunk_index || i == 1) {
+                // Update progress more frequently - every 5 chunks or specific milestones
+                if ((i + 1) % 5 == 0 || (i + 1) == actual_total_chunks || i == 0) {
                     // Use colored output for progress updates
                     std::cout << "  " << ANSIColorConst::GREEN << "Wrote chunk " << ANSIColorConst::RESET 
-                              << ANSIColorConst::BRIGHT_YELLOW << i << ANSIColorConst::RESET << "/" 
-                              << ANSIColorConst::BRIGHT_YELLOW << highest_chunk_index << ANSIColorConst::RESET
+                              << ANSIColorConst::BRIGHT_YELLOW << (i + 1) << ANSIColorConst::RESET << "/"  // Display as 1-based for user
+                              << ANSIColorConst::BRIGHT_YELLOW << actual_total_chunks << ANSIColorConst::RESET
                               << " (" << ANSIColorConst::BRIGHT_YELLOW 
                               << total_bytes_written << ANSIColorConst::RESET << " bytes, " 
-                              << ANSIColorConst::BRIGHT_CYAN << static_cast<int>((static_cast<float>(i) / highest_chunk_index) * 100)
+                              << ANSIColorConst::BRIGHT_CYAN << static_cast<int>((static_cast<float>(i + 1) / actual_total_chunks) * 100)
                               << "%" << ANSIColorConst::RESET << ")" << std::endl;
                 }
             }
@@ -753,7 +769,7 @@ namespace image_parser {
                      << ANSIColorConst::BRIGHT_YELLOW << total_bytes_written << ANSIColorConst::RESET << std::endl;
             std::cout << "  " << ANSIColorConst::GREEN << "Output file:" << ANSIColorConst::RESET << " " 
                      << output_filename << std::endl;
-            if (missing_chunks) {
+            if (missing_chunks_flag) {
                 std::cout << "  " << ANSIColorConst::RED << "Warning: Some chunks were missing!" << ANSIColorConst::RESET << std::endl;
             }
             if (size_mismatch) {
@@ -764,7 +780,7 @@ namespace image_parser {
             std::cout << ANSIColorConst::CYAN << "======================" << ANSIColorConst::RESET << std::endl;
             printCompletion("File written successfully", total_bytes_written);
 
-            return !missing_chunks;
+            return !missing_chunks_flag;
         }
         catch (const std::exception &e) {
             printError("Exception writing file: " + std::string(e.what()));

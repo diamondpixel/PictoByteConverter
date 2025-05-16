@@ -54,7 +54,7 @@ int main(int argc, char* argv[]) {
     // Parse command-line arguments
     for (int i = 1; i < argc; i++) {
         string arg = argv[i];
-        
+
         if (arg == "--debug") {
             // Skip debug mode argument as it's already handled
             continue;
@@ -114,9 +114,9 @@ int main(int argc, char* argv[]) {
                 maxMemoryMB = 1024;
             }
         }
-        else if (arg.substr(0, 14) == "--maxChunkSize=") {
+        else if (arg.length() >= 15 && arg.substr(0, 15) == "--maxChunkSize=") {
             try {
-                maxChunkSizeMB = std::stoi(arg.substr(14));
+                maxChunkSizeMB = std::stoi(arg.substr(15));
                 if (maxChunkSizeMB < 1) {
                     printWarning("Invalid maxChunkSize value: " + std::to_string(maxChunkSizeMB) + " MB (must be >= 1 MB)");
                     maxChunkSizeMB = 9; // Default: 9MB
