@@ -233,10 +233,6 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
 
     if (current_chunk_actual_data_length == 0 && original_file_total_size > 0) {
         // This case should ideally be handled by the main loop not creating a task for an empty trailing chunk
-        printWarning(
-            "processChunk: current_chunk_actual_data_length is 0 for chunk " + std::to_string(chunk_index) +
-            ". This might be an empty trailing chunk.");
-        // Depending on requirements, we might still create an image with only metadata if this is the last chunk
         // For now, if there's no data, we don't proceed to create an image from it.
         // However, metadata part might still be useful for the last chunk marker.
         // Let's assume for now that a chunk with zero data (not header) shouldn't produce an image unless it's specifically to mark EOF.
@@ -253,17 +249,48 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                       all_file_data_ptr + chunk_start_offset_in_file + current_chunk_actual_data_length,
                       chunk_data_segment.begin());
         } catch (const std::bad_alloc &e) {
-            printError("processChunk: Memory allocation failed for chunk_data_segment: " + std::string(e.what()));
+            printError(std::string("DIAGNOSTIC_ERROR: processChunk: Memory allocation failed for chunk_data_segment: ") + e.what() + std::string(" for chunk ") + std::to_string(chunk_index));
             return; // Cannot proceed with this chunk
         } catch (const std::exception &e) {
-            printError("processChunk: Error copying chunk data: " + std::string(e.what()));
+            printError(std::string("DIAGNOSTIC_ERROR: processChunk: Error copying chunk data: ") + e.what() + std::string(" for chunk ") + std::to_string(chunk_index));
             return;
         }
     }
     // chunk_data_segment now holds the raw data for the current chunk
     // The rest of the function proceeds as before, using chunk_data_segment
 
-    // Create the header for this chunk
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        // chunk_data_segment contains the data for this chunk. Use its .data() and current_chunk_actual_data_length.
+        const unsigned char* current_segment_ptr_dbg = chunk_data_segment.empty() ? nullptr : chunk_data_segment.data();
+        const unsigned char* end_ptr_dbg = current_segment_ptr_dbg ? current_segment_ptr_dbg + current_chunk_actual_data_length : nullptr;
+        
+        std::ostringstream oss_start_ptr_proc, oss_end_ptr_proc;
+        oss_start_ptr_proc << static_cast<const void*>(current_segment_ptr_dbg);
+        oss_end_ptr_proc << static_cast<const void*>(end_ptr_dbg);
+
+        // Explicitly start with std::string to avoid const char* + const char* issues
+        std::string debug_msg = std::string("Processing Chunk ") + std::to_string(chunk_index) +
+                               std::string(": ActualDataLength=") + std::to_string(current_chunk_actual_data_length) +
+                               std::string(", TotalChunks=") + std::to_string(total_chunks) +
+                               std::string(", OriginalFileTotalSize=") + std::to_string(original_file_total_size) +
+                               std::string(", ReceivedDataSegmentStartPtr=") + oss_start_ptr_proc.str() +
+                               std::string(", ReceivedDataSegmentEndPtr (one past last)=") + oss_end_ptr_proc.str() +
+                               std::string(", MaxImageFileSizeParam=") + std::to_string(max_image_file_size_param);
+        printDebug(debug_msg);
+
+        // If current_chunk_actual_data_length > 0, chunk_data_segment should have been resized and filled.
+        // If it's still empty, something went wrong with the copy or resize, or logic is flawed.
+        if (chunk_data_segment.empty() && current_chunk_actual_data_length > 0) {
+            std::string error_msg = std::string("CRITICAL_ERROR_CHUNK_PROC: Chunk ") + std::to_string(chunk_index) +
+                                  std::string(" has current_chunk_actual_data_length > 0 but chunk_data_segment is empty.");
+            printError(error_msg);
+            return; 
+        }
+    }
+
+    // Construct header_data (internal metadata like chunk index, total chunks, etc.)
+    std::string chunk_idx_str = "ChunkIndex:" + std::to_string(chunk_index) + "\0";
+    std::string total_chunks_str = "TotalChunks:" + std::to_string(total_chunks) + "\0";
     std::string original_filename = std::filesystem::path(original_input_filepath).filename().string();
     size_t header_filename_len = original_filename.length();
     if (header_filename_len > 65535) {
@@ -297,7 +324,7 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
     std::string data_size_str = std::to_string(current_chunk_actual_data_length);
     // This is the size of the data in *this* chunk
     if (data_size_str.length() > 10) {
-        printError("Data size string too long!"); // Should not happen for typical chunk sizes
+        printError(std::string("Data size string too long!") + std::string(" for chunk ") + std::to_string(chunk_index)); // Should not happen for typical chunk sizes
         data_size_str = data_size_str.substr(0, 10);
     }
     while (data_size_str.length() < 10) data_size_str.insert(0, "0"); // Pad with leading zeros
@@ -306,16 +333,16 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
     // 5. Current Chunk Index (4 bytes as string)
     std::string current_chunk_str = std::to_string(chunk_index);
     if (current_chunk_str.length() > 4) {
-        printError("Current chunk string too long!");
+        printError(std::string("Current chunk string too long!") + std::string(" for chunk ") + std::to_string(chunk_index));
         current_chunk_str = "9999";
     }
     while (current_chunk_str.length() < 4) current_chunk_str.insert(0, "0");
     header_data.insert(header_data.end(), current_chunk_str.begin(), current_chunk_str.end());
 
     // 6. Total Chunks (4 bytes as string)
-    std::string total_chunks_str = std::to_string(total_chunks);
+    total_chunks_str = std::to_string(total_chunks);
     if (total_chunks_str.length() > 4) {
-        printError("Total chunks string too long!");
+        printError(std::string("Total chunks string too long!") + std::string(" for chunk ") + std::to_string(chunk_index));
         total_chunks_str = "9999";
     }
     while (total_chunks_str.length() < 4) total_chunks_str.insert(0, "0");
@@ -328,16 +355,59 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
             header_data.push_back(0x00); // Pad with null bytes
         }
     } else if (current_header_size > FIXED_TOTAL_HEADER_LENGTH) {
-        printError("Logic error: Calculated header size exceeds FIXED_TOTAL_HEADER_LENGTH. Truncating.");
+        printError(std::string("Logic error: Calculated header size exceeds FIXED_TOTAL_HEADER_LENGTH. Truncating.") + std::string(" for chunk ") + std::to_string(chunk_index));
         header_data.resize(FIXED_TOTAL_HEADER_LENGTH);
     }
 
-    // Combine header and chunk data
-    std::vector<uint8_t> chunk_data_with_header = header_data;
-    chunk_data_with_header.insert(chunk_data_with_header.end(), chunk_data_segment.begin(), chunk_data_segment.end());
+    std::vector<unsigned char> combined_data_for_image;
+    try {
+        // Reserve space first: header + actual chunk data
+        // Ensure chunk_data_segment is used here, not chunk_data_ptr
+        size_t required_size = header_data.size() + (chunk_data_segment.empty() ? 0 : chunk_data_segment.size());
+        combined_data_for_image.reserve(required_size); 
+
+        // Insert header
+        combined_data_for_image.insert(combined_data_for_image.end(), header_data.begin(), header_data.end());
+
+        // Insert actual chunk data (if any)
+        if (!chunk_data_segment.empty()) {
+            if (gDebugMode.load(std::memory_order_relaxed)) {
+                std::ostringstream oss_src_ptr;
+                oss_src_ptr << static_cast<const void*>(chunk_data_segment.data());
+                // Build the debug string explicitly to avoid concatenation issues
+                std::string debug_msg = std::string("processChunk: Inserting chunk_data_segment into combined_data. Source Ptr: ") +
+                                      oss_src_ptr.str() +
+                                      std::string(", Size: ") + 
+                                      std::to_string(chunk_data_segment.size());
+                printDebug(debug_msg);
+            }
+            combined_data_for_image.insert(combined_data_for_image.end(), chunk_data_segment.begin(), chunk_data_segment.end());
+        } else if (current_chunk_actual_data_length > 0) {
+            // This case should have been caught by the earlier check, but as a safeguard:
+            std::string error_msg = std::string("CRITICAL_ERROR_CHUNK_PROC: Chunk ") + std::to_string(chunk_index) +
+                                  std::string(" about to insert data, but chunk_data_segment is empty while current_chunk_actual_data_length > 0.");
+            printError(error_msg);
+            // Not returning, to see if it crashes, but this is bad.
+        }
+
+    } catch (const std::length_error& le) {
+        std::string error_msg = std::string("DIAGNOSTIC_ERROR: processChunk: Length error during vector operation for combined_data_for_image: ") + le.what() + std::string(" for chunk ") + std::to_string(chunk_index);
+        printError(error_msg);
+    } catch (const std::bad_alloc& ba) {
+        printError(std::string("DIAGNOSTIC_ERROR: processChunk: std::bad_alloc during vector reserve/insert: ") + ba.what() + std::string(" for chunk ") + std::to_string(chunk_index));
+        return; // Don't proceed
+    } catch (const std::exception& e) {
+        printError(std::string("DIAGNOSTIC_ERROR: processChunk: Generic std::exception during vector reserve/insert: ") + e.what() + std::string(" for chunk ") + std::to_string(chunk_index));
+        return; // Don't proceed
+    }
+
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("Chunk " + std::to_string(chunk_index) + ": Combined data size for image: " +
+                   std::to_string(combined_data_for_image.size()));
+    }
 
     std::cout << "DIAGNOSTIC: processChunk " << chunk_index 
-              << ": chunk_data_with_header.size() = " << chunk_data_with_header.size()
+              << ": combined_data_for_image.size() = " << combined_data_for_image.size()
               << ", max_image_file_size_param = " << max_image_file_size_param << std::endl;
 
     // Calculate optimal dimensions for the image
@@ -347,19 +417,19 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
 
     if (chunk_index == static_cast<int>(total_chunks - 1)) {
         // Special handling for the last chunk if needed (e.g., different aspect ratio or metadata)
-        auto dims = optimizeLastImageDimensions(chunk_data_with_header.size(), bytes_per_pixel, 0, bmp_header_size, 1.0f);
+        auto dims = optimizeLastImageDimensions(combined_data_for_image.size(), bytes_per_pixel, 0, bmp_header_size, 1.0f);
         width = dims.first;
         height = dims.second;
     } else {
-        auto dims = calculateOptimalRectDimensions(chunk_data_with_header.size(), bytes_per_pixel, bmp_header_size,
+        auto dims = calculateOptimalRectDimensions(combined_data_for_image.size(), bytes_per_pixel, bmp_header_size,
                                                  max_image_file_size_param, 1.0f);
         width = dims.first;
         height = dims.second;
     }
 
-    if (width == 0 || height == 0 || (width * height * bytes_per_pixel < chunk_data_with_header.size())) {
+    if (width == 0 || height == 0 || (width * height * bytes_per_pixel < combined_data_for_image.size())) {
         std::cerr << "DIAGNOSTIC_ERROR: Failed to calculate valid dimensions for chunk " << chunk_index 
-                  << ". Data size: " << chunk_data_with_header.size() << std::endl;
+                  << ". Data size: " << combined_data_for_image.size() << std::endl;
         return; // Skips creating an image for this chunk
     }
 
@@ -367,7 +437,7 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
     // This allocation (width * height * 3) can be significant.
     // ResourceManager could track this if BitmapImage was adapted or if we allocated buffer externally.
     BitmapImage bmp(static_cast<int>(width), static_cast<int>(height));
-    bmp.setData(chunk_data_with_header, 0); // Embed data (header + chunk data)
+    bmp.setData(combined_data_for_image, 0); // Embed data (header + chunk data)
 
     // Generate output filename for this chunk
     std::string output_filename = output_base_path + "_" + std::to_string(chunk_index + 1) + "of" +
@@ -445,220 +515,274 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
                   int maxMemoryMB) {
-    try {
-        // Initialize and configure resource manager
-        auto &resManager = ResourceManager::getInstance();
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("parseToImage started. Input: " + input_file + ", Output Base: " + output_base +
+                   ", MaxChunkSizeMB: " + std::to_string(maxChunkSizeMB) + ", MaxThreads: " + std::to_string(maxThreads) +
+                   ", MaxMemoryMB: " + std::to_string(maxMemoryMB));
+    }
 
-        // Configure thread pool size
-        if (maxThreads > 0) {
-            // Use explicitly specified thread count
-            resManager.setMaxThreads(maxThreads);
-        } else {
-            // Default to half of available CPU cores if not specified
-            // This provides a balanced approach to multithreading
-            auto default_threads = std::max(1u, std::thread::hardware_concurrency() / 2);
-            resManager.setMaxThreads(default_threads);
-        }
+    // --- ResourceManager Setup (Singleton) ---
+    auto& resManager = ResourceManager::getInstance();
+    if (maxThreads > 0) {
+        resManager.setMaxThreads(maxThreads);
+    } else {
+        auto default_threads = std::max(1u, std::thread::hardware_concurrency() / 2);
+        resManager.setMaxThreads(default_threads);
+    }
+    if (maxMemoryMB >= 64) {
+        resManager.setMaxMemory(static_cast<size_t>(maxMemoryMB) * 1024 * 1024);
+    } else {
+        constexpr size_t DEFAULT_MEMORY_LIMIT = 1024 * 1024 * 1024; // 1GB
+        resManager.setMaxMemory(DEFAULT_MEMORY_LIMIT);
+    }
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("ResourceManager configured. Max Threads: " + std::to_string(resManager.getMaxThreads()) + ", Max Memory: " + std::to_string(resManager.getMaxMemory() / (1024*1024)) + " MB");
+    }
+    // --- End ResourceManager Setup ---
 
-        // Configure memory limits
-        if (maxMemoryMB >= 64) {
-            // Use explicitly specified memory limit
-            resManager.setMaxMemory(static_cast<size_t>(maxMemoryMB) * 1024 * 1024);
-        } else {
-            // Default to 1GB if not specified or 64 > X
-            // This is a reasonable default for most systems
-            constexpr size_t DEFAULT_MEMORY_LIMIT = 1024 * 1024 * 1024; // 1GB
-            resManager.setMaxMemory(DEFAULT_MEMORY_LIMIT);
-        }
-
-        // Log the configured resource limits
-        printMessage("Resource limits: " + std::to_string(resManager.getMaxThreads()) +
-                     " threads, " + std::to_string(resManager.getMaxMemory() / (1024 * 1024)) + " MB memory");
-
-        // Use references to avoid unnecessary copies
-        const std::string &cleanInputPath = input_file;
-        const std::string &cleanOutputPath = output_base;
-
-        // Validate input file
-        if (!std::filesystem::exists(cleanInputPath)) {
-            printError("Input file does not exist: " + cleanInputPath);
-            return false;
-        }
-
-        // Create output directory if needed
-        std::filesystem::path output_path(cleanOutputPath);
-        std::filesystem::path output_dir = output_path.parent_path();
-        if (!output_dir.empty() && !std::filesystem::exists(output_dir)) {
-            // Create the directory structure recursively
-            std::filesystem::create_directories(output_dir);
-            printStatus("Created output directory: " + output_dir.string());
-        }
-
-        // Get file size and validate
-        auto file_size = std::filesystem::file_size(cleanInputPath);
-        if (file_size == 0) {
-            printError("Input file is empty: " + cleanInputPath);
-            return false;
-        }
-
-        // Calculate chunk size and number of chunks
-        size_t chunk_size_bytes = static_cast<size_t>(maxChunkSizeMB) * 1024 * 1024;
-        chunk_size_bytes = std::min(chunk_size_bytes, file_size); // Ensure chunk_size_bytes isn't larger than the file itself
-
-        // Calculate how many chunks we'll need based on chunk size
-        auto num_chunks = (file_size + chunk_size_bytes - 1) / chunk_size_bytes;
-        if (chunk_size_bytes == 0 && file_size > 0) { // Avoid division by zero if maxChunkSizeMB was 0 but file not empty
-            printError("maxChunkSizeMB is 0, leading to zero chunk_size_bytes. Cannot process non-empty file.");
-            return false;
-        }
-        if (file_size == 0) { // Already handled, but good to be defensive for num_chunks
-            num_chunks = 0;
-        }
-
-        printMessage("Processing file: " + input_file + " (Size: " + std::to_string(file_size) + " bytes)");
-        printMessage(
-            "Max chunk size: " + std::to_string(maxChunkSizeMB) + "MB (" + std::to_string(
-                chunk_size_bytes) + " bytes)");
-        printMessage("Number of chunks: " + std::to_string(num_chunks));
-        printMessage(
-            "Max threads: " + std::to_string(maxThreads) + ", Max memory: " + std::to_string(maxMemoryMB) + "MB");
-
-        // max_image_file_size calculation adjustment
-        size_t actual_data_per_chunk_nominal = chunk_size_bytes; 
-        constexpr size_t internal_chunk_header_size = 48; // As defined in processChunk's header_data logic
-        size_t min_payload_size_for_a_chunk = actual_data_per_chunk_nominal + internal_chunk_header_size;
-        constexpr size_t bmp_disk_header_size = 54;
-        // Estimate min image file size: BMP disk header + (data payload + internal header) + ~5% for padding/row alignment worst case
-        size_t estimated_min_image_file_size_needed = bmp_disk_header_size + min_payload_size_for_a_chunk + (min_payload_size_for_a_chunk / 20); 
-
-        size_t memory_derived_max_size = (resManager.getMaxMemory() / (num_chunks > 0 ? num_chunks : 1)) / 2;
-        if (resManager.getMaxMemory() == 0 || (num_chunks > 0 && resManager.getMaxMemory() / num_chunks == 0)) { // Check for near-zero due to division
-            memory_derived_max_size = DEFAULT_MAX_IMAGE_SIZE; // Fallback if memory calculation is too small
-            std::cerr << "DIAGNOSTIC_WARN: memory_derived_max_size was calculated too low or zero. Defaulting part of max_image_file_size calc." << std::endl;
-        }
-
-        auto max_image_file_size = std::min(
-            DEFAULT_MAX_IMAGE_SIZE, // Global cap (100MB)
-            std::max(estimated_min_image_file_size_needed, memory_derived_max_size) // Ensure it's at least what a chunk needs
-        );
-        
-        // Additional safety: If total_chunks is 1, memory_derived_max_size can be large.
-        // Ensure max_image_file_size isn't excessively large if not needed.
-        if (num_chunks == 1) {
-            max_image_file_size = std::min(max_image_file_size, DEFAULT_MAX_IMAGE_SIZE);
-            max_image_file_size = std::max(max_image_file_size, estimated_min_image_file_size_needed);
-        } else if (num_chunks > 1 && max_image_file_size < estimated_min_image_file_size_needed) {
-             // This case implies memory_derived_max_size was smaller than estimated_min_image_file_size_needed,
-             // and DEFAULT_MAX_IMAGE_SIZE was also smaller (unlikely unless DEFAULT_MAX_IMAGE_SIZE is tiny).
-             // The std::max should have handled it, but as a fallback, issue a warning if it's still too small.
-             std::cerr << "DIAGNOSTIC_WARN: Calculated max_image_file_size (" << max_image_file_size 
-                       << ") is still less than estimated minimum needed (" << estimated_min_image_file_size_needed
-                       << "). Clamping up." << std::endl;
-             max_image_file_size = estimated_min_image_file_size_needed;
-        }
-        // Final clamp to ensure it doesn't exceed DEFAULT_MAX_IMAGE_SIZE due to large estimates
-        max_image_file_size = std::min(max_image_file_size, DEFAULT_MAX_IMAGE_SIZE);
-
-
-        std::cout << "DIAGNOSTIC: actual_data_per_chunk_nominal (from maxChunkSizeMB): " << actual_data_per_chunk_nominal << std::endl;
-        std::cout << "DIAGNOSTIC: estimated_min_image_file_size_needed (for a chunk's data + headers + BMP overhead estimate): " << estimated_min_image_file_size_needed << std::endl;
-        std::cout << "DIAGNOSTIC: memory_derived_max_size (target per image based on RAM/chunks): " << memory_derived_max_size << std::endl;
-        std::cout << "DIAGNOSTIC: Calculated max_image_file_size (final value passed to chunks): " << max_image_file_size << std::endl;
-
-        // Open the input file using memory mapping
-        MemoryMappedFile mapped_file;
-        if (!mapped_file.open(input_file)) {
-            printError("parseToImage: Failed to open or map input file: " + input_file);
-            // Ensure writer thread is properly joined even on early exit
-            return false;
-        }
-
-        size_t original_file_size = mapped_file.getSize();
-        const unsigned char *all_file_data_ptr = mapped_file.getData();
-
-        if (original_file_size == 0 && !mapped_file.isOpen() && input_file.length() > 0) {
-            // Check if open failed and wasn't just an empty file that opened correctly
-            printError(
-                "parseToImage: Failed to get size or data ptr, possibly map failed silently after open for non-empty file: "
-                + input_file);
-            // MMF::open should have printed specific error from GetLastError
-            // Ensure writer thread is properly joined
-            return false; // Critical failure if file is not empty but we can't access it
-        }
-
-        if (original_file_size == 0) {
-            printWarning("Input file is empty. No images will be generated.");
-            // Let writer thread terminate gracefully
-            return true;
-        }
-
-
-        // Create task queue for image processing
-        // This queue will hold tasks that need to be written to disk
-        std::string spill_dir_path_str;
-        // output_dir is derived from output_base (cleanOutputPath) a few lines above.
-        // output_dir is the parent directory where output images will be saved.
-        if (!output_dir.empty()) {
-            // Ensure output_dir itself exists before constructing a path within it.
-            // The queue constructor will attempt to create the spill_dir_path_str.
-            if (!std::filesystem::exists(output_dir)) {
-                 // This should have been created already by lines 431-434 if output_dir was not empty.
-                 // If it's still not there, it's an issue, but we'll let the queue try to create its spill path.
-                 printWarning("Output directory '" + output_dir.string() + "' does not exist. Spill path might be problematic.");
-            }
-            spill_dir_path_str = (output_dir / ".spill_tasks").string();
-        } else {
-            // If output_dir is empty, it means output_base was likely just a filename
-            // (e.g., "myarchive"), so output files go to CWD.
-            // Spill tasks will also go to a subdirectory in CWD.
-            spill_dir_path_str = ".spill_tasks";
-            if (gDebugMode) { // Only print if debugging, as this is a normal case for relative paths
-                printMessage("Output base path has no parent directory; spill tasks will be in './.spill_tasks'");
-            }
-        }
-
-        // Default max_in_memory_items_ is 1000. The queue's constructor will attempt to create the spill directory.
-        ThreadSafeQueueTemplate<ImageTaskInternal> task_queue(1000, spill_dir_path_str);
-
-        // Start the background image writer thread
-        // This thread will run concurrently with processing threads
-        std::atomic<bool> should_terminate_writer(false);
-        std::thread writer_thread(imageWriterThread, std::ref(task_queue), std::ref(should_terminate_writer));
-
-        // Submit tasks to ResourceManager
-        for (size_t i = 0; i < num_chunks; ++i) {
-            // Capture variables for the lambda, ensuring correct lifetime and access
-            // Pass all_file_data_ptr and original_file_size to the lambda and then to processChunk.
-            resManager.runWithThread([
-                    i, chunk_size_bytes, num_chunks, original_file_size, all_file_data_ptr,
-                    input_file_copy = input_file, // Pass input_file by value (copy) for safety in lambda
-                    output_base_copy = output_base, // Pass output_base by value (copy)
-                    &task_queue, // Pass task_queue by reference (it's thread-safe)
-                    max_image_file_size
-                ]() {
-                    processChunk(static_cast<int>(i), chunk_size_bytes, num_chunks, original_file_size,
-                                 all_file_data_ptr, input_file_copy, output_base_copy,
-                                 task_queue, max_image_file_size);
-                });
-        }
-
-        // Wait for all processing tasks to complete
-        resManager.waitForAllThreads();
-
-        // Signal writer thread to terminate and wait for it
-        should_terminate_writer = true;
-        if (writer_thread.joinable()) {
-            writer_thread.join();
-        }
-
-        // mapped_file will be closed automatically by its destructor.
-        printMessage("File processing complete.");
-        return true;
-    } catch (const std::exception &e) {
-        // Handle any exceptions and log the error
-        printError("Error in parseToImage: " + std::string(e.what()));
+    MemoryMappedFile fileToMap;
+    if (!fileToMap.open(input_file)) {
+        printError("Failed to open or map input file: " + input_file);
         return false;
     }
+    if (fileToMap.getSize() == 0) {
+        printWarning("Input file is empty: " + input_file + ". Nothing to process.");
+        fileToMap.close();
+        return true; // Technically successful, as an empty file results in no images.
+    }
+
+    size_t file_size = fileToMap.getSize();
+    const unsigned char *all_file_data_ptr = fileToMap.getData();
+    if (!all_file_data_ptr) {
+        printError("Failed to get data pointer from memory mapped file: " + input_file);
+        fileToMap.close();
+        return false;
+    }
+
+    // New: maxChunkSizeMB is the target size for the *output BMP file*.
+    if (maxChunkSizeMB <= 0) {
+        printWarning("Invalid maxChunkSizeMB specified (" + std::to_string(maxChunkSizeMB) + "). Using default of 9MB for target BMP size.");
+        maxChunkSizeMB = 9;
+    }
+    size_t target_output_bmp_file_size_bytes = static_cast<size_t>(maxChunkSizeMB) * 1024 * 1024;
+
+    const size_t BMP_FILE_AND_INFO_HEADER_SIZE = 14 + 40; // Standard BMP headers
+    // Estimate internal metadata overhead (chunk_idx_str, total_chunks_str, filesize_str, original_filename_str, plus null terminators, separators etc.)
+    // Increased from +50 to +75 for more robust estimation of numeric strings, separators, and potential EOF markers.
+    size_t estimated_internal_metadata_overhead = input_file.length() + 75; 
+
+    if (target_output_bmp_file_size_bytes <= (BMP_FILE_AND_INFO_HEADER_SIZE + estimated_internal_metadata_overhead + 1024)) { // + 1KB for minimal data
+        printError("Target BMP file size (" + std::to_string(maxChunkSizeMB) + 
+                   "MB) is too small to hold BMP headers, internal metadata, and a reasonable amount of data. Minimum practical size is larger.");
+        printError("Required for headers and estimated metadata approx: " + 
+                   std::to_string(BMP_FILE_AND_INFO_HEADER_SIZE + estimated_internal_metadata_overhead) + " bytes.");
+        fileToMap.close();
+        return false;
+    }
+
+    // This is the space available in the BMP after its own headers, for our combined payload (internal metadata + raw file data) AND BMP row padding.
+    size_t available_area_for_payload_and_padding = target_output_bmp_file_size_bytes - BMP_FILE_AND_INFO_HEADER_SIZE;
+
+    // Estimate that BMP row padding will be a small fraction of the data it accompanies.
+    // Let D_combined = internal metadata + raw file data. Let P_bmp_padding = BMP row padding.
+    // We need D_combined + P_bmp_padding <= available_area_for_payload_and_padding.
+    // Assume P_bmp_padding = k * D_combined (e.g., padding is 0.5% of D_combined, so k=0.005).
+    // Then D_combined * (1+k) <= available_area_for_payload_and_padding.
+    // So, D_combined <= available_area_for_payload_and_padding / (1+k).
+    // This D_combined is the target size for (actual internal metadata + raw file data for the chunk).
+    const double padding_allowance_factor = 0.005; // Reserve 0.5% of the combined payload space for BMP row padding.
+    size_t estimated_total_combined_payload_capacity = static_cast<size_t>(
+        static_cast<double>(available_area_for_payload_and_padding) / (1.0 + padding_allowance_factor)
+    );
+
+    if (estimated_total_combined_payload_capacity <= estimated_internal_metadata_overhead) {
+        printError("Target BMP file size (" + std::to_string(maxChunkSizeMB) +
+                   "MB) is too small. After reserving space for BMP headers and estimated BMP row padding, the remaining space (" +
+                   std::to_string(estimated_total_combined_payload_capacity) + 
+                   " bytes) is not enough to even hold the estimated internal metadata (" +
+                   std::to_string(estimated_internal_metadata_overhead) + " bytes).");
+        fileToMap.close();
+        return false;
+    }
+
+    size_t estimated_raw_data_payload_capacity_per_chunk = estimated_total_combined_payload_capacity - estimated_internal_metadata_overhead;
+
+    if (estimated_raw_data_payload_capacity_per_chunk == 0) {
+         printError("Calculated raw data payload capacity per chunk is 0. Target BMP size might be too small or metadata/padding estimates too large.");
+         fileToMap.close();
+         return false;
+    }
+
+    size_t num_chunks = (file_size + estimated_raw_data_payload_capacity_per_chunk - 1) / estimated_raw_data_payload_capacity_per_chunk;
+    if (num_chunks == 0 && file_size > 0) num_chunks = 1; // Ensure at least one chunk if there's data
+
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("Target output BMP file size per chunk: " + std::to_string(target_output_bmp_file_size_bytes) + " bytes (" + std::to_string(maxChunkSizeMB) + " MB).");
+        printDebug("Estimated internal metadata overhead per chunk: " + std::to_string(estimated_internal_metadata_overhead) + " bytes.");
+        printDebug("Available area in BMP for (payload + padding): " + std::to_string(available_area_for_payload_and_padding) + " bytes.");
+        printDebug("Estimated total combined payload (internal metadata + raw data) capacity after padding allowance: " + std::to_string(estimated_total_combined_payload_capacity) + " bytes.");
+        printDebug("Estimated raw data payload capacity per chunk (after internal metadata estimate): " + std::to_string(estimated_raw_data_payload_capacity_per_chunk) + " bytes.");
+        printDebug("Total file size: " + std::to_string(file_size) + " bytes. Number of chunks: " + std::to_string(num_chunks));
+    }
+
+    std::string output_dir_str = std::filesystem::path(output_base).parent_path().string();
+    std::string spill_path_str;
+    if (!output_dir_str.empty()) {
+        try {
+            std::filesystem::path temp_spill_path = std::filesystem::path(output_dir_str) / ".spill_tasks";
+            spill_path_str = temp_spill_path.string();
+        } catch (const std::exception& e) {
+            printWarning("Could not form spill path from output_dir: " + output_dir_str + ". Error: " + e.what() + ". Spilling may be disabled or use CWD.");
+            spill_path_str = ".spill_tasks"; // Fallback to CWD
+        }
+    } else {
+        spill_path_str = ".spill_tasks"; // Default to CWD if output_base has no parent path
+    }
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("Spill path for image task queue: " + spill_path_str);
+    }
+
+    // Use 1000 for max_in_memory_items, matching ThreadSafeQueueTemplate's typical default
+    ThreadSafeQueueTemplate<ImageTaskInternal> image_task_queue(1000, spill_path_str);
+    std::atomic<bool> should_terminate_writer(false);
+    std::atomic<size_t> processed_chunks_count(0); // To track completion
+    std::thread writer_thread(imageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
+
+    for (size_t i = 0; i < num_chunks; ++i) {
+        size_t current_chunk_offset = i * estimated_raw_data_payload_capacity_per_chunk;
+
+        // Check 1: If the offset itself is already at or past the end of the file, stop.
+        if (current_chunk_offset >= file_size) {
+            if (gDebugMode.load(std::memory_order_relaxed)) {
+                printDebug("Chunk Loop " + std::to_string(i) + ": offset " + std::to_string(current_chunk_offset) +
+                           " is >= file_size " + std::to_string(file_size) + ". Ending chunk processing loop.");
+            }
+            break;
+        }
+
+        // Calculate data size for the current chunk
+        // It's the minimum of the configured capacity or the remaining file data from the current offset.
+        size_t remaining_file_data = file_size - current_chunk_offset; // Safe because current_chunk_offset < file_size
+        size_t current_chunk_data_size = std::min(estimated_raw_data_payload_capacity_per_chunk, remaining_file_data);
+
+        // Check 2: If the calculated data size for this chunk is zero, skip enqueueing a task.
+        if (current_chunk_data_size == 0) {
+            if (gDebugMode.load(std::memory_order_relaxed)) {
+                printDebug("Chunk Loop " + std::to_string(i) + ": calculated current_chunk_data_size is 0. Offset: " +
+                           std::to_string(current_chunk_offset) + ". Skipping task enqueue.");
+            }
+            continue;
+        }
+
+        // Assertion: current_chunk_offset + current_chunk_data_size should now always be <= file_size.
+        // The redundant 'if (current_chunk_offset + current_chunk_data_size > file_size)' block was removed.
+
+        if (gDebugMode.load(std::memory_order_relaxed)) {
+            const unsigned char* data_start_ptr_for_log = all_file_data_ptr + current_chunk_offset;
+            const unsigned char* data_end_ptr_one_past_last_for_log = data_start_ptr_for_log + current_chunk_data_size;
+
+            // Use ostringstream to correctly convert pointer addresses to strings for logging
+            std::ostringstream oss_start_ptr, oss_end_ptr;
+            oss_start_ptr << static_cast<const void*>(data_start_ptr_for_log);
+            oss_end_ptr << static_cast<const void*>(data_end_ptr_one_past_last_for_log);
+
+            // Explicitly start with std::string
+            std::string debug_msg = std::string("Enqueueing Task for Chunk ") + std::to_string(i) +
+                                   std::string(": Offset=") + std::to_string(current_chunk_offset) +
+                                   std::string(", SizeToRead=") + std::to_string(current_chunk_data_size) +
+                                   std::string(", InputFileTotalSize=") + std::to_string(file_size) +
+                                   std::string(", DataStartPtrToPass=") + oss_start_ptr.str() +
+                                   std::string(", DataEndPtrToAccess (one past last)=") + oss_end_ptr.str();
+            
+            if (current_chunk_offset + current_chunk_data_size > file_size) {
+                 printError("CRITICAL_ASSERTION_FAIL_PRE_ENQUEUE: Chunk " + std::to_string(i) + ": offset (" + std::to_string(current_chunk_offset) + 
+                            ") + size (" + std::to_string(current_chunk_data_size) + ") = " + 
+                            std::to_string(current_chunk_offset + current_chunk_data_size) + 
+                            " exceeds file_size (" + std::to_string(file_size) + ")");
+            }
+            if (!all_file_data_ptr) {
+                printError("CRITICAL_ASSERTION_FAIL_PRE_ENQUEUE: Chunk " + std::to_string(i) + ": all_file_data_ptr is null!");
+            }
+        }
+
+        // Capture variables for the lambda
+        int chunk_index_cap = i;
+        size_t num_chunks_cap = num_chunks;
+        size_t file_size_cap = file_size;
+        // Capture the base pointer of the MMF, processChunk will calculate its own offsets.
+        const unsigned char* base_mmf_ptr_for_lambda_cap = all_file_data_ptr;
+        // Capture the uniform chunk payload capacity for offset calculation in processChunk.
+        size_t uniform_chunk_payload_capacity_for_lambda_cap = estimated_raw_data_payload_capacity_per_chunk;
+        
+        // Capture input_file and output_base by value (copy) for safety in lambda
+        std::string input_file_val_cap = input_file;
+        std::string output_base_val_cap = output_base;
+        // image_task_queue is assumed to be the original queue variable in parseToImage's scope
+        size_t actual_max_image_size_bytes_cap_lambda = target_output_bmp_file_size_bytes; // Renamed from actual_max_image_size_bytes
+
+
+            if (gDebugMode.load(std::memory_order_relaxed)) {
+                // Explicitly start with std::string
+                std::string debug_msg = std::string("Enqueueing task for chunk: ") + std::to_string(chunk_index_cap) + 
+                                      std::string(", Offset: ") + std::to_string(current_chunk_offset) + 
+                                      std::string(", ActualDataSize: ") + std::to_string(current_chunk_data_size);
+                printDebug(debug_msg);
+            }
+
+            // Assuming resManager and image_task_queue are available in this scope
+            resManager.runWithThread([
+                &image_task_queue, // Capture original queue by reference
+                chunk_index_cap,
+                num_chunks_cap,
+                file_size_cap,
+                base_mmf_ptr_for_lambda_cap,
+                uniform_chunk_payload_capacity_for_lambda_cap,
+                input_file_val_cap,
+                output_base_val_cap,
+                actual_max_image_size_bytes_cap_lambda
+            ]() {
+                // This code runs in a worker thread
+                processChunk(
+                    chunk_index_cap,
+                    uniform_chunk_payload_capacity_for_lambda_cap,
+                    num_chunks_cap,
+                    file_size_cap,
+                    base_mmf_ptr_for_lambda_cap,
+                    input_file_val_cap,
+                    output_base_val_cap,
+                    image_task_queue, // Pass the captured reference
+                    actual_max_image_size_bytes_cap_lambda
+                );
+            });
+
+            processed_chunks_count++;
+    }
+
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("All chunk processing tasks submitted. Waiting for completion...");
+    }
+
+    // Wait for all processing tasks to complete via ResourceManager
+    // This loop is a more robust way to wait if resManager.waitForAllThreads() isn't enough
+    // or if we want to provide progress.
+    // However, if resManager.waitForAllThreads() is blocking and correct, that's simpler.
+    // Let's assume waitForAllThreads is sufficient and blocks until all runWithThread tasks are done.
+    resManager.waitForAllThreads();
+
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("All chunks processed by threads. Processed count: " + std::to_string(processed_chunks_count.load()));
+    }
+
+    // Signal writer thread to terminate and wait for it
+    should_terminate_writer = true;
+    if (writer_thread.joinable()) {
+        writer_thread.join();
+    }
+
+    fileToMap.close();
+
+    printMessage("File processing complete.");
+    return true;
 }
 
 /**
@@ -697,89 +821,143 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
  * @param filename Path where the BMP file will be saved
  */
 void BitmapImage::save(const std::string &filename) {
-    try {
-        // Open the output file in binary mode
-        std::ofstream outFile(filename, std::ios::binary);
-        if (!outFile) {
-            printError("Cannot open file for writing: " + filename);
-            return;
-        }
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("BitmapImage::save called for: " + filename + " Dimensions: " + std::to_string(width) + "x" + std::to_string(height));
+    }
 
-        // BMP file header
-        unsigned char fileHeader[14] = {
-            'B', 'M',
-            0, 0, 0, 0,
-            0, 0, 0, 0,
-            54, 0, 0, 0
-        };
+    std::string temp_filename = filename + ".tmp";
 
-        // BMP info header
-        unsigned char infoHeader[40] = {
-            40, 0, 0, 0,
-            0, 0, 0, 0,
-            0, 0, 0, 0,
-            1, 0,
-            24, 0,
-            0, 0, 0, 0,
-            0, 0, 0, 0,
-            0, 0, 0, 0,
-            0, 0, 0, 0
-        };
+    std::ofstream file(temp_filename, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        printError("Failed to open temporary file for writing: " + temp_filename);
+        return;
+    }
 
-        // Calculate padding size for each row
-        int paddingSize = (4 - (width * 3) % 4) % 4;
+    if (width <= 0 || height <= 0) {
+        printError("Invalid image dimensions for save: " + std::to_string(width) + "x" + std::to_string(height) + " for file " + temp_filename);
+        file.close();
+        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error& e) { printWarning("BitmapImage::save: Failed to remove temp file (invalid dims): " + temp_filename + " Error: " + e.what()); }
+        return;
+    }
 
-        // Calculate total file size
-        int fileSize = 14 + 40 + (width * 3 + paddingSize) * height;
+    // BMP File Header
+    BITMAPFILEHEADER bfh;
+    bfh.bfType = 0x4d42; // 'BM'
+    bfh.bfSize = 0; // Will be set later
+    bfh.bfReserved1 = 0;
+    bfh.bfReserved2 = 0;
+    bfh.bfOffBits = 0; // Will be set later
 
-        // Set file size in the file header
-        fileHeader[2] = static_cast<unsigned char>(fileSize);
-        fileHeader[3] = static_cast<unsigned char>(fileSize >> 8);
-        fileHeader[4] = static_cast<unsigned char>(fileSize >> 16);
-        fileHeader[5] = static_cast<unsigned char>(fileSize >> 24);
+    // BMP Info Header
+    BITMAPINFOHEADER bih;
+    bih.biSize = sizeof(BITMAPINFOHEADER);
+    bih.biWidth = width;
+    bih.biHeight = height;
+    bih.biPlanes = 1;
+    bih.biBitCount = 24;
+    bih.biCompression = BI_RGB;
+    bih.biSizeImage = 0; // Will be set later
+    bih.biXPelsPerMeter = 0;
+    bih.biYPelsPerMeter = 0;
+    bih.biClrUsed = 0;
+    bih.biClrImportant = 0;
 
-        // Set image dimensions in the info header
-        infoHeader[4] = static_cast<unsigned char>(width);
-        infoHeader[5] = static_cast<unsigned char>(width >> 8);
-        infoHeader[6] = static_cast<unsigned char>(width >> 16);
-        infoHeader[7] = static_cast<unsigned char>(width >> 24);
+    // Calculate row padding and actual file size
+    const size_t bytes_per_pixel = 3; // For 24-bit BMP
+    size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
+    size_t padding_size = (4 - (data_row_size % 4)) % 4;
+    size_t row_stride_in_file = data_row_size + padding_size; // Size of one row in the BMP file (data + padding)
+    size_t actual_image_data_on_disk_size = static_cast<size_t>(height) * row_stride_in_file;
+    size_t total_file_size = sizeof(bfh) + sizeof(bih) + actual_image_data_on_disk_size;
 
-        infoHeader[8] = static_cast<unsigned char>(height);
-        infoHeader[9] = static_cast<unsigned char>(height >> 8);
-        infoHeader[10] = static_cast<unsigned char>(height >> 16);
-        infoHeader[11] = static_cast<unsigned char>(height >> 24);
+    // Set file size in the file header
+    bfh.bfSize = static_cast<uint32_t>(total_file_size);
+    bfh.bfOffBits = sizeof(bfh) + sizeof(bih);
 
-        // Set image size in the info header
-        int imageSize = (width * 3 + paddingSize) * height;
-        infoHeader[20] = static_cast<unsigned char>(imageSize);
-        infoHeader[21] = static_cast<unsigned char>(imageSize >> 8);
-        infoHeader[22] = static_cast<unsigned char>(imageSize >> 16);
-        infoHeader[23] = static_cast<unsigned char>(imageSize >> 24);
+    // Set image size in the info header (size of pixel data on disk including padding)
+    bih.biSizeImage = static_cast<uint32_t>(actual_image_data_on_disk_size);
 
-        // Write the file and info headers
-        outFile.write(reinterpret_cast<char *>(fileHeader), 14);
-        outFile.write(reinterpret_cast<char *>(infoHeader), 40);
+    // Write the file and info headers
+    file.write(reinterpret_cast<const char *>(&bfh), sizeof(bfh));
+    file.write(reinterpret_cast<const char *>(&bih), sizeof(bih));
 
-        // Write the image data
-        unsigned char padding[3] = {0, 0, 0};
-        for (int y = height - 1; y >= 0; y--) {
-            for (int x = 0; x < width; x++) {
-                unsigned char color[3] = {
-                    pixels[(y * width + x) * 3 + 2],
-                    pixels[(y * width + x) * 3 + 1],
-                    pixels[(y * width + x) * 3]
-                };
-                outFile.write(reinterpret_cast<char *>(color), 3);
+    // BMPs store pixels bottom-to-top. Pixel data in `pixels` is assumed to be compact (no padding within it).
+    // The original data source (e.g. file chunk) is raw bytes. For 24-bit BMP, we interpret 3 bytes as one pixel.
+    // BMP format requires BGR order. We assume `pixels` holds R,G,B order and swap to B,G,R during write.
+    
+    unsigned char pixel_output_buffer[bytes_per_pixel]; // To hold B,G,R for one pixel
+    unsigned char row_padding_buffer[3] = {0,0,0}; // Max padding is 3 bytes of zeros
+
+    for (int y_bmp = height - 1; y_bmp >= 0; --y_bmp) { // Iterate image rows from bottom to top for BMP file structure
+        for (int x_pixel = 0; x_pixel < width; ++x_pixel) { // Iterate pixels within a row
+            // Calculate index for the current pixel in the source `pixels` array.
+            // `pixels` is organized top-to-bottom, left-to-right from the source data.
+            // For BMP bottom-to-top, y_bmp maps to source row y_img = y_bmp (if pixels were also bottom-up)
+            // OR y_img = (height - 1 - y_bmp) if pixels are top-down.
+            // Let's assume pixels is 1D array representing a 2D image scanline by scanline (top-to-bottom).
+            // The y_bmp is the row index *in the output file* (bottom-up).
+            // So, the source data row is y_bmp if pixels are stored bottom-up, or (height-1-y_bmp) if top-down.
+            // The current `BitmapImage::setData` is just `std::copy(data.begin(), data.end(), pixels.begin() + offset);`
+            // This means pixels is a flat buffer. The original code's `pixels[(y * width + x) * 3]` implied `y` was image row index.
+            // Let's stick to the original interpretation: y is image row (0 to height-1), x is pixel column (0 to width-1).
+            // So, for BMP row `y_bmp` (from height-1 down to 0), we're writing data from `pixels` that corresponds to image row `y_bmp`.
+            size_t source_pixel_offset = (static_cast<size_t>(y_bmp) * width + x_pixel) * bytes_per_pixel;
+
+            // Check bounds to prevent reading past the end of pixels, though resize should handle it.
+            if (source_pixel_offset + bytes_per_pixel > pixels.size()) {
+                // This should ideally not happen if resize was correct.
+                // Fill with black if out of bounds.
+                pixel_output_buffer[0] = 0; // B
+                pixel_output_buffer[1] = 0; // G
+                pixel_output_buffer[2] = 0; // R
+            } else {
+                // Assuming pixels has R,G,B order for each pixel from source data.
+                // Swap to B,G,R for BMP file.
+                pixel_output_buffer[0] = pixels[source_pixel_offset + 2]; // Blue component
+                pixel_output_buffer[1] = pixels[source_pixel_offset + 1]; // Green component
+                pixel_output_buffer[2] = pixels[source_pixel_offset + 0]; // Red component
             }
-
-            outFile.write(reinterpret_cast<char *>(padding), paddingSize);
+            file.write(reinterpret_cast<const char *>(pixel_output_buffer), bytes_per_pixel);
         }
+        // After writing all pixels for a row, write padding if any.
+        if (padding_size > 0) {
+            file.write(reinterpret_cast<const char *>(row_padding_buffer), padding_size);
+        }
+    }
 
-        outFile.close();
-        printMessage("Successfully saved " + filename);
-    } catch (const std::exception &e) {
-        printError("Error saving bitmap: " + std::string(e.what()));
-    } catch (...) {
-        printError("Unknown error while saving bitmap");
+    if (!file.good()) {
+        printError("Error occurred while writing pixel data to temporary file: " + temp_filename);
+        file.close();
+        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error& e) { printWarning("BitmapImage::save: Failed to remove temp file (write error): " + temp_filename + " Error: " + e.what()); }
+        return;
+    }
+
+    file.close();
+    if (!file.good()) { // Check state after closing
+        printError("Error occurred after closing temporary file: " + temp_filename);
+        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error& e) { printWarning("BitmapImage::save: Failed to remove temp file (close error): " + temp_filename + " Error: " + e.what()); }
+        return;
+    }
+
+    // Attempt to rename the temporary file to the final filename
+    try {
+        // Remove target file if it exists, to prevent rename error on some systems
+        if (std::filesystem::exists(filename)) {
+            std::filesystem::remove(filename);
+        }
+        std::filesystem::rename(temp_filename, filename);
+        if (gDebugMode.load(std::memory_order_relaxed)) {
+            printDebug("Successfully saved and renamed " + temp_filename + " to " + filename);
+        }
+    } catch (const std::filesystem::filesystem_error &e) {
+        printError("Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what());
+        // Try to clean up the temporary file if rename fails
+        try {
+            if (std::filesystem::exists(temp_filename)) {
+                std::filesystem::remove(temp_filename);
+            }
+        } catch (const std::filesystem::filesystem_error &e_remove) {
+            printWarning("BitmapImage::save: Failed to remove temp file after rename error: " + temp_filename + ". Error: " + e_remove.what());
+        }
     }
 }
