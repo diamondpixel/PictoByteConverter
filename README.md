@@ -200,8 +200,8 @@ int main() {
     
     // Convert a file to image
     bool success = FileToImage(
-        "D:\\test.iso",
-        "D:\\test\\test",
+        "D:\test.iso",
+        "D:\test\test",
         16,              // Use 16 threads
         32768,           // Use up to 32GB of memory
         9,               // 9MB max chunk size
@@ -213,8 +213,8 @@ int main() {
         
         // Extract the file back
         success = ImageToFile(
-            "D:\\test\\test_1of350.bmp",
-            "D:\\",
+            "D:\test\test.bmp",
+            "D:\",
             12,           // Use 12 threads
             16384,        // Use up to 16GB of memory
             true         // Enable debug mode
