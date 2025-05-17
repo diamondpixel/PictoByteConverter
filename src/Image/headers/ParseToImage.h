@@ -6,10 +6,14 @@
 #include <latch>
 #include <chrono>
 #include <future>
-#include "../../Threading/headers/ThreadSafeQueue.h"
 #include "Bitmap.hpp"
-#include "ImageTask.h"
 #include "SpecialVector.h"
+#include "../../Tasks/headers/ImageTask.h"
+#include "../../Tasks/headers/ImageTaskInternal.h"
+#include "../../Threading/headers/ThreadSafeQueue.h"
+
+
+
 
 /**
  * Calculate optimal dimensions for an image based on data size and constraints
@@ -76,7 +80,7 @@ void processImageTask(const ImageTask& task, std::ifstream& file, size_t bytesPe
  * @param maxSizeBytes Maximum allowed image size in bytes
  * @param headerSize Size of the metadata header in bytes
  */
-void workerThread(ThreadSafeQueue& tasks, std::ifstream& file, size_t bytesPerPixel,
+void workerThread(ThreadSafeQueue<ImageTask>& tasks, std::ifstream& file, size_t bytesPerPixel,
                  size_t bmpHeaderSize, size_t maxSizeBytes, size_t headerSize);
 
 /**

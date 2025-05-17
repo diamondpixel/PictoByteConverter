@@ -1,6 +1,6 @@
 // Minimal debug implementation
 #include "headers/Debug.h"
-#include "../Image/headers/ResourceManager.h"
+#include "../Threading/headers/ResourceManager.h"
 #include <algorithm>
 #include <iostream>
 #include <string>

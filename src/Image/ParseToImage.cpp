@@ -24,6 +24,7 @@
 #include <mutex>         // For thread synchronization primitives
 #include <optional>      // For optional return values
 #include <queue>         // For queue data structure
+#include <future>        // For std::future and std::async
 
 // Define NOMINMAX to prevent windows.h from defining min and max macros,
 // which conflict with std::min and std::max.
@@ -32,9 +33,10 @@
 
 #include <algorithm>     // For std::copy
 #include "headers/ParseToImage.h"       // Header defining the interface
-#include "headers/ResourceManager.h"    // Resource management utilities
-#include "../Debug/headers/Debug.h"     // Debugging and logging utilities
-#include "headers/ImageProcessingTypes.h" // Moved class definitions
+#include "../Threading/headers/ThreadSafeQueue.h" // New thread-safe queue implementation
+#include "../Image/headers/BitmapImage.h"
+
+#include "../FileSystem/headers/MemoryMappedFile.h"
 
 // Define DEFAULT_MAX_IMAGE_SIZE here. This constant specifies the default upper limit
 // for the size of any single generated BMP image file. It helps in managing output file sizes
@@ -335,7 +337,7 @@ std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t
  *                          This allows direct access to any part of the file's content without repeated reads.
  * @param original_input_filepath The full path to the original input file (used for extracting filename for metadata).
  * @param output_base_path The base directory and filename prefix where output BMP images will be saved.
- *                         The chunk index and total chunks will be appended to this base to form unique filenames.
+ *                         The chunk index and total chunk count will be appended to this base to form unique filenames for each image chunk.
  * @param image_task_queue A reference to a thread-safe queue. `ImageTaskInternal` objects, ready for saving to disk,
  *                         are pushed onto this queue. This allows image saving to be handled by a dedicated writer thread,
  *                         decoupling it from the chunk processing logic.
@@ -344,7 +346,7 @@ std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t
  */
 void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chunks, size_t original_file_total_size,
                   const unsigned char *all_file_data_ptr, const std::string &original_input_filepath,
-                  const std::string &output_base_path, ThreadSafeQueueTemplate<ImageTaskInternal> &image_task_queue,
+                  const std::string &output_base_path, ThreadSafeQueue<ImageTaskInternal> &image_task_queue,
                   size_t max_image_file_size_param) {
     printMessage("Processing chunk " + std::to_string(chunk_index) + " / " + std::to_string(total_chunks - 1));
 
@@ -429,12 +431,7 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                                     std::string(
                                         " has current_chunk_actual_data_length > 0 but chunk_data_segment is empty.");
             printError(error_msg);
-            if (gDebugMode.load(std::memory_order_relaxed)) {
-                printDebug(
-                    "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) +
-                    " (Early Exit: empty chunk_data_segment with positive length) ----");
-            }
-            return;
+            // Not returning, to see if it crashes, but this is bad.
         }
     }
 
@@ -453,7 +450,7 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
     // Fixed header size is 48 bytes for now
     // 3 (total_header_length) + 2 (filename_length) + N (filename) + 10 (data_size) + 4 (current_chunk) + 4 (total_chunks) + P (padding)
     // Let's define fixed total_header_length
-    const size_t FIXED_TOTAL_HEADER_LENGTH = 48;
+    constexpr size_t FIXED_TOTAL_HEADER_LENGTH = 48;
 
     std::vector<uint8_t> header_data;
     header_data.reserve(FIXED_TOTAL_HEADER_LENGTH);
@@ -677,24 +674,47 @@ void saveImage(const ImageTaskInternal &task) {
  * This design decouples image processing (which can be CPU-bound) from image saving (which is I/O-bound),
  * potentially improving overall application throughput and responsiveness.
  *
- * @param task_queue A reference to the thread-safe queue (`ThreadSafeQueueTemplate<ImageTaskInternal>`)
+ * @param task_queue A reference to the thread-safe queue (`ThreadSafeQueue<ImageTaskInternal>`)
  *                   from which image saving tasks are retrieved.
  * @param should_terminate An atomic boolean flag. When the main processing logic decides that no more tasks
  *                         will be added and work is complete, it sets this flag to `true`. The writer thread
  *                         will then finish processing any remaining items in the queue and subsequently terminate.
  */
-void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
+void imageWriterThread(ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
     try {
+        // Register this thread with ResourceManager
+        ResourceManager::getInstance().registerThread("ImageWriter");
+        
         // Continue running until told to terminate AND queue is empty
-        while (!should_terminate || !task_queue.empty()) {
-            // Try to get an item from the queue, with timeout
-            auto task = task_queue.try_pop(std::chrono::milliseconds(100));
-            if (task) {
+        while (!should_terminate.load(std::memory_order_acquire) || !task_queue.empty()) {
+            // Try to get an item from the queue
+            ImageTaskInternal task;
+            uint64_t task_id;
+            std::string task_name;
+
+            if (task_queue.try_pop(task, task_id, task_name)) {
                 // If a task was retrieved, save the image
-                saveImage(*task);
+                try {
+                    // Get the image from the task
+                    BitmapImage img = task.image;
+
+                    // Save to the specified path
+                    img.save(task.filename);
+
+                    // Log successful save
+                    printStatus("Saved image: " + task.filename);
+                } catch (const std::exception &e) {
+                    // Log any errors during the save operation
+                    printError("Failed to save image: " + std::string(e.what()));
+                }
+            } else {
+                // If no task was retrieved, sleep for a short time before trying again
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            // If no task was retrieved, loop will continue checking
         }
+        
+        // Unregister this thread from ResourceManager
+        ResourceManager::getInstance().unregisterThread();
     } catch (const std::exception &e) {
         // Log any thread errors
         printError("Image writer thread error: " + std::string(e.what()));
@@ -708,13 +728,12 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  * 1. Validating the input file and parameters.
  * 2. Opening and memory-mapping the input file for efficient random access to its data.
  * 3. Calculating the number of chunks the input file will be divided into, based on `maxChunkSizeMB` and the total file size.
- * 4. Initializing a `ResourceManager` to manage and limit system resources like threads and memory used by the application.
- * 5. Setting up a thread pool (via `ResourceManager`) for concurrent processing of chunks and a dedicated image writer thread.
- * 6. Iterating through the calculated chunks of the input file:
+ * 4. Initializing a thread pool for concurrent processing of chunks and a dedicated image writer thread.
+ * 5. Iterating through the calculated chunks of the input file:
  *    - For each chunk, it prepares parameters and dispatches a `processChunk` task to a worker thread from the pool.
  *    - `processChunk` will read data, create metadata, determine image dimensions, build the `BitmapImage`, and queue it.
- * 7. Waiting for all chunk processing tasks and image writing tasks to complete.
- * 8. Performing cleanup operations, such as unmapping the input file and ensuring all threads are properly joined.
+ * 6. Waiting for all chunk processing tasks and image writing tasks to complete.
+ * 7. Performing cleanup operations, such as unmapping the input file and ensuring all threads are properly joined.
  *
  * The output consists of one or more BMP images. Each image contains a segment of the original file's data,
  * along with embedded metadata necessary for potential reassembly of the original file from these images.
@@ -726,8 +745,7 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  *                       The actual BMP image file size might be larger due to BMP overhead (headers, padding) and embedded metadata.
  * @param maxThreads The maximum number of worker threads to use for processing file chunks concurrently.
  *                   If non-positive, a default (often based on hardware concurrency) might be used.
- * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes. This is used by the
- *                    `ResourceManager` to throttle operations if memory limits are approached.
+ * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes.
  * @param newMaxImageSizeMB The maximum size for each output BMP image file in megabytes. This overrides the default value.
  *                       If non-positive, a default of 100MB is used.
  * @return `true` if the conversion process completes successfully and all chunks are processed and saved.
@@ -735,6 +753,10 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
                   int maxMemoryMB, int newMaxImageSizeMB) {
+    // Record start time for performance metrics
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // --- Setup ---
     // --- ResourceManager Setup (Singleton) ---
     auto &resManager = ResourceManager::getInstance();
     if (maxThreads > 0) {
@@ -863,29 +885,18 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
 
     std::string output_dir_str = std::filesystem::path(output_base).parent_path().string();
-    std::string spill_path_str;
-    if (!output_dir_str.empty()) {
-        try {
-            std::filesystem::path temp_spill_path = std::filesystem::path(output_dir_str) / ".spill_tasks";
-            spill_path_str = temp_spill_path.string();
-        } catch (const std::exception &e) {
-            printWarning(
-                "Could not form spill path from output_dir: " + output_dir_str + ". Error: " + e.what() +
-                ". Spilling may be disabled or use CWD.");
-            spill_path_str = ".spill_tasks"; // Fallback to CWD
-        }
-    } else {
-        spill_path_str = ".spill_tasks"; // Default to CWD if output_base has no parent path
-    }
+    std::string queue_name = "ImageTaskQueue";
+
     if (gDebugMode.load(std::memory_order_relaxed)) {
-        printDebug("Spill path for image task queue: " + spill_path_str);
+        printDebug("Creating thread-safe queue with name: " + queue_name);
     }
 
-    // Use 1000 for max_in_memory_items, matching ThreadSafeQueueTemplate's typical default
-    ThreadSafeQueueTemplate<ImageTaskInternal> image_task_queue(1000, spill_path_str);
+    // Use the new ThreadSafeQueue implementation with a maximum size of 1000 items
+    ThreadSafeQueue<ImageTaskInternal> image_task_queue(1000, queue_name);
     std::atomic<bool> should_terminate_writer(false);
     std::atomic<size_t> processed_chunks_count(0); // To track completion
-
+    std::atomic<size_t> tasks_pushed_to_queue(0);  // Track how many tasks were pushed to the queue
+    std::atomic<size_t> images_saved(0);           // Track how many images were actually saved
 
     // Ensure we have at least 1 writer thread, but no more than 4
     size_t available_threads = resManager.getMaxThreads();
@@ -897,11 +908,60 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                    std::to_string(available_threads) + " available threads");
     }
 
+    // Create a modified imageWriterThread that updates the images_saved counter
+    auto modifiedImageWriterThread = [images_saved_ptr = &images_saved](ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
+        try {
+            // Register this thread with ResourceManager
+            ResourceManager::getInstance().registerThread("ImageWriter");
+            
+            // Continue running until told to terminate AND queue is empty
+            while (!should_terminate.load(std::memory_order_acquire) || !task_queue.empty()) {
+                // Try to get an item from the queue
+                ImageTaskInternal task;
+                uint64_t task_id;
+                std::string task_name;
+
+                if (task_queue.try_pop(task, task_id, task_name)) {
+                    // If a task was retrieved, save the image
+                    try {
+                        // Get the image from the task
+                        BitmapImage img = task.image;
+
+                        // Save to the specified path
+                        img.save(task.filename);
+
+                        // Increment saved images counter
+                        images_saved_ptr->fetch_add(1, std::memory_order_relaxed);
+
+                        // Log successful save
+                        printStatus("Saved image: " + task.filename);
+                    } catch (const std::exception &e) {
+                        // Log any errors during the save operation
+                        printError("Failed to save image: " + std::string(e.what()));
+                    }
+                } else {
+                    // If no task was retrieved, sleep for a short time before trying again
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+            
+            // Unregister this thread from ResourceManager
+            ResourceManager::getInstance().unregisterThread();
+        } catch (const std::exception &e) {
+            // Log any thread errors
+            printError("Image writer thread error: " + std::string(e.what()));
+        }
+    };
+
     std::vector<std::thread> writer_threads;
     writer_threads.reserve(num_writer_threads);
     for (size_t i = 0; i < num_writer_threads; ++i) {
-        writer_threads.emplace_back(imageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
+        writer_threads.emplace_back(modifiedImageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
     }
+    
+    // Store futures for worker threads to track their completion
+    std::vector<std::future<void>> futures;
+    futures.reserve(num_chunks);
 
     for (size_t i = 0; i < num_chunks; ++i) {
         size_t current_chunk_offset = i * estimated_raw_data_payload_capacity_per_chunk;
@@ -965,9 +1025,10 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         // Capture the uniform chunk payload capacity for offset calculation in processChunk.
         size_t uniform_chunk_payload_capacity_for_lambda_cap = estimated_raw_data_payload_capacity_per_chunk;
 
-        // Capture input_file and output_base by value (copy) for safety in lambda
-        const std::string &input_file_val_cap = input_file;
-        const std::string &output_base_val_cap = output_base;
+        // Create copies of the strings for the lambda
+        const std::string& input_file_val_cap = input_file;
+        const std::string& output_base_val_cap = output_base;
+        
         // image_task_queue is assumed to be the original queue variable in parseToImage's scope
         size_t effective_max_image_size_bytes;
         if (newMaxImageSizeMB > 0) {
@@ -984,18 +1045,14 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
             printDebug(debug_msg);
         }
 
-        // Assuming resManager and image_task_queue are available in this scope
-        resManager.runWithThread([
-                &image_task_queue, // Capture original queue by reference
-                chunk_index_cap,
-                num_chunks_cap,
-                file_size_cap,
-                base_mmf_ptr_for_lambda_cap,
-                uniform_chunk_payload_capacity_for_lambda_cap,
-                input_file_val_cap,
-                output_base_val_cap,
-                effective_max_image_size_bytes
-            ]() {
+        // Use std::async to run the task in a worker thread
+        auto future = std::async(std::launch::async, 
+            [chunk_index_cap, uniform_chunk_payload_capacity_for_lambda_cap, num_chunks_cap, 
+             file_size_cap, base_mmf_ptr_for_lambda_cap, input_file_val_cap, output_base_val_cap,
+             &image_task_queue, tasks_pushed_to_queue_ptr = &tasks_pushed_to_queue, effective_max_image_size_bytes]() {
+                // Register this thread with ResourceManager
+                ResourceManager::getInstance().registerThread("ChunkProcessor");
+                
                 // This code runs in a worker thread
                 processChunk(
                     chunk_index_cap,
@@ -1008,8 +1065,20 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                     image_task_queue, // Pass the captured reference
                     effective_max_image_size_bytes
                 );
+                
+                // Increment the counter for tasks pushed to queue
+                tasks_pushed_to_queue_ptr->fetch_add(1, std::memory_order_relaxed);
+                
+                // Use printMessage instead of printDebug since it's more likely to be accessible
+                if (gDebugMode.load(std::memory_order_relaxed)) {
+                    printMessage("Worker thread for chunk " + std::to_string(chunk_index_cap) + " completed");
+                }
+                
+                // Unregister this thread from ResourceManager
+                ResourceManager::getInstance().unregisterThread();
             });
-
+        
+        futures.push_back(std::move(future));
         processed_chunks_count++;
     }
 
@@ -1017,8 +1086,14 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         printDebug("All chunk processing tasks submitted. Waiting for completion...");
     }
 
-    // Wait for all processing tasks to complete via ResourceManager
-    resManager.waitForAllThreads();
+    // Wait for all processing tasks to complete
+    printMessage("Waiting for " + std::to_string(futures.size()) + " worker threads to complete...");
+    for (auto& future : futures) {
+        future.wait();
+    }
+    
+    printMessage("All worker threads completed. Queue size: " + std::to_string(image_task_queue.size()));
+    printMessage("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()));
 
     if (gDebugMode.load(std::memory_order_relaxed)) {
         printDebug(
@@ -1026,148 +1101,38 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
 
     // Signal writer threads to terminate and wait for them
+    printMessage("Signaling writer threads to terminate...");
     should_terminate_writer = true;
+    
+    printMessage("Waiting for writer threads to complete...");
     for (auto &t: writer_threads) {
         if (t.joinable()) {
             t.join();
         }
     }
-
+    printMessage("All writer threads completed. Images saved: " + std::to_string(images_saved.load()));
+    
     fileToMap.close();
 
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    double seconds = duration / 1000.0;
+    double mb_processed = static_cast<double>(file_size) / (1024 * 1024);
+    double mb_per_second = mb_processed / seconds;
+    double avg_chunk_size_mb = mb_processed / num_chunks;
+    double avg_time_per_chunk_ms = static_cast<double>(duration) / num_chunks;
+
+    printMessage("=== Processing Statistics ===");
+    printMessage("Total file size: " + std::to_string(mb_processed) + " MB");
+    printMessage("Number of chunks processed: " + std::to_string(num_chunks));
+    printMessage("Processing time: " + std::to_string(seconds) + " seconds");
+    printMessage("Processing speed: " + std::to_string(mb_per_second) + " MB/s");
+    printMessage("Average chunk size: " + std::to_string(avg_chunk_size_mb) + " MB");
+    printMessage("Average time per chunk: " + std::to_string(avg_time_per_chunk_ms) + " ms");
+    printMessage("Number of worker threads: " + std::to_string(available_threads));
+    printMessage("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()));
+    printMessage("Images created: " + std::to_string(images_saved.load()));
+    
     printMessage("File processing complete.");
     return true;
-}
-
-/**
- * @brief Constructor for the `BitmapImage` class.
- *
- * Initializes a new bitmap image with the specified dimensions.
- *
- * @param width Width of the image in pixels
- * @param height Height of the image in pixels
- */
-BitmapImage::BitmapImage(int width, int height) {
-    this->width = width;
-    this->height = height;
-    pixels.resize(width * height * 3, 0); // 3 bytes per pixel (RGB)
-}
-
-/**
- * @brief Sets binary data into the pixel buffer at the specified offset.
- *
- * This method is used to embed file data and metadata into the image pixels.
- *
- * @param data Binary data to be embedded in the image
- * @param offset Starting position in the pixel buffer
- */
-void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
-    // Calculate how many bytes we can actually copy
-    auto bytesToCopy = std::min(data.size(), pixels.size() - offset);
-
-    // Copy the data into the pixel buffer
-    std::copy_n(data.begin(), bytesToCopy, pixels.begin() + offset);
-}
-
-/**
- * @brief Saves the image to a BMP file.
- *
- * This function handles the low-level details of writing the image data
- * to a file in the BMP format.
- *
- * @param filename Path where the BMP file will be saved
- */
-void BitmapImage::save(const std::string &filename) {
-    std::string temp_filename = filename + ".tmp";
-
-    HANDLE hFile = CreateFile
-    (
-        temp_filename.c_str(),
-        GENERIC_WRITE,
-        0,
-        nullptr,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
-        nullptr
-    );
-
-    if (hFile == INVALID_HANDLE_VALUE) {
-        printError(
-            "Failed to open temporary file for writing: " + temp_filename + ". Error: " +
-            std::to_string(GetLastError()));
-        return;
-    }
-
-    // BMP Headers
-    BITMAPFILEHEADER bfh;
-    bfh.bfType = 0x4d42;
-    bfh.bfReserved1 = 0;
-    bfh.bfReserved2 = 0;
-
-    BITMAPINFOHEADER bih;
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = width;
-    bih.biHeight = height;
-    bih.biPlanes = 1;
-    bih.biBitCount = 24;
-    bih.biCompression = BI_RGB;
-    bih.biXPelsPerMeter = 0;
-    bih.biYPelsPerMeter = 0;
-    bih.biClrUsed = 0;
-    bih.biClrImportant = 0;
-
-    constexpr size_t bytes_per_pixel = 3;
-    const size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
-    const size_t padding = (4 - (data_row_size % 4)) % 4;
-    const size_t row_stride_in_file = data_row_size + padding;
-    const size_t actual_image_data_on_disk_size = static_cast<size_t>(height) * row_stride_in_file;
-    const size_t total_file_size = sizeof(bfh) + sizeof(bih) + actual_image_data_on_disk_size;
-
-    bfh.bfSize = static_cast<uint32_t>(total_file_size);
-    bfh.bfOffBits = sizeof(bfh) + sizeof(bih);
-    bih.biSizeImage = static_cast<uint32_t>(actual_image_data_on_disk_size);
-
-    // Write headers
-    DWORD bytes_written;
-    WriteFile(hFile, &bfh, sizeof(bfh), &bytes_written, nullptr);
-    WriteFile(hFile, &bih, sizeof(bih), &bytes_written, nullptr);
-    OVERLAPPED overlapped = {0};
-    overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-
-    // Buffer for one row
-    std::vector<unsigned char> row_buffer(row_stride_in_file, 0);
-    for (int y_bmp = height - 1; y_bmp >= 0; --y_bmp) {
-        for (int x_pixel = 0; x_pixel < width; ++x_pixel) {
-            size_t source_pixel_offset = (static_cast<size_t>(y_bmp) * width + x_pixel) * bytes_per_pixel;
-            size_t buffer_offset = x_pixel * bytes_per_pixel;
-            if (source_pixel_offset + bytes_per_pixel <= pixels.size()) {
-                row_buffer[buffer_offset + 0] = pixels[source_pixel_offset + 2]; // Blue
-                row_buffer[buffer_offset + 1] = pixels[source_pixel_offset + 1]; // Green
-                row_buffer[buffer_offset + 2] = pixels[source_pixel_offset + 0]; // Red
-            }
-        }
-        WriteFile(hFile, row_buffer.data(), row_stride_in_file, &bytes_written, nullptr);
-    }
-
-    CloseHandle(hFile);
-    CloseHandle(overlapped.hEvent);
-
-    // Rename file
-    try {
-        if (std::filesystem::exists(filename)) {
-            std::filesystem::remove(filename);
-        }
-        std::filesystem::rename(temp_filename, filename);
-    } catch (const std::filesystem::filesystem_error &e) {
-        printError("Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what());
-        try {
-            if (std::filesystem::exists(temp_filename)) {
-                std::filesystem::remove(temp_filename);
-            }
-        } catch (const std::filesystem::filesystem_error &e_remove) {
-            printWarning(
-                "BitmapImage::save: Failed to remove temp file after rename error: " + temp_filename + ". Error: " +
-                e_remove.what());
-        }
-    }
 }

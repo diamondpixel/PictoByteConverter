@@ -14,7 +14,7 @@
 #include <future>
 
 #include "headers/Bitmap.hpp"
-#include "headers/ResourceManager.h"
+#include "../Threading/headers/ResourceManager.h"
 #include "../Debug/headers/Debug.h"
 
 namespace image_parser {
