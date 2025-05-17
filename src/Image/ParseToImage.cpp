@@ -1071,11 +1071,17 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
 void BitmapImage::save(const std::string &filename) {
     std::string temp_filename = filename + ".tmp";
 
+
     std::ofstream file(temp_filename, std::ios::binary | std::ios::trunc);
     if (!file.is_open()) {
         printError("Failed to open temporary file for writing: " + temp_filename);
         return;
     }
+
+    // Set a large buffer for the file stream
+    constexpr size_t buffer_size = 1024 * 1024; // 1MB buffer
+    std::vector<char> file_buffer(buffer_size);
+    file.rdbuf()->pubsetbuf(file_buffer.data(), buffer_size);
 
     if (width <= 0 || height <= 0) {
         printError(
@@ -1138,43 +1144,28 @@ void BitmapImage::save(const std::string &filename) {
     unsigned char pixel_output_buffer[bytes_per_pixel]; // To hold B,G,R for one pixel
     unsigned char row_padding_buffer[3] = {0, 0, 0}; // Max padding is 3 bytes of zeros
 
-    for (int y_bmp = height - 1; y_bmp >= 0; --y_bmp) {
-        // Iterate image rows from bottom to top for BMP file structure
-        for (int x_pixel = 0; x_pixel < width; ++x_pixel) {
-            // Iterate pixels within a row
-            // Calculate index for the current pixel in the source `pixels` array.
-            // `pixels` is organized top-to-bottom, left-to-right from the source data.
-            // For BMP bottom-to-top, y_bmp maps to source row y_img = y_bmp (if pixels were also bottom-up)
-            // OR y_img = (height - 1 - y_bmp) if pixels are top-down.
-            // Let's assume pixels is 1D array representing a 2D image scanline by scanline (top-to-bottom).
-            // The y_bmp is the row index *in the output file* (bottom-up).
-            // So, the source data row is y_bmp if pixels are stored bottom-up, or (height-1-y_bmp) if top-down.
-            // The current `BitmapImage::setData` is just `std::copy(data.begin(), data.end(), pixels.begin() + offset);`
-            // This means pixels is a flat buffer. The original code's `pixels[(y * width + x) * 3]` implied `y` was image row index.
-            // Let's stick to the original interpretation: y is image row (0 to height-1), x is pixel column (0 to width-1).
-            // So, for BMP row `y_bmp` (from height-1 down to 0), we're writing data from `pixels` that corresponds to image row `y_bmp`.
-            size_t source_pixel_offset = (static_cast<size_t>(y_bmp) * width + x_pixel) * bytes_per_pixel;
+    // Allocate row buffer
+    std::vector<unsigned char> row_buffer(row_stride_in_file, 0); // Includes space for padding
 
-            // Check bounds to prevent reading past the end of pixels, though resize should handle it.
-            if (source_pixel_offset + bytes_per_pixel > pixels.size()) {
-                // This should ideally not happen if resize was correct.
-                // Fill with black if out of bounds.
-                pixel_output_buffer[0] = 0; // B
-                pixel_output_buffer[1] = 0; // G
-                pixel_output_buffer[2] = 0; // R
+    for (int y_bmp = height - 1; y_bmp >= 0; --y_bmp) {
+        // Fill row buffer
+        for (int x_pixel = 0; x_pixel < width; ++x_pixel) {
+            size_t source_pixel_offset = (static_cast<size_t>(y_bmp) * width + x_pixel) * bytes_per_pixel;
+            size_t buffer_offset = x_pixel * bytes_per_pixel;
+            if (source_pixel_offset + bytes_per_pixel <= pixels.size()) {
+                // Convert RGB to BGR
+                row_buffer[buffer_offset + 0] = pixels[source_pixel_offset + 2]; // Blue
+                row_buffer[buffer_offset + 1] = pixels[source_pixel_offset + 1]; // Green
+                row_buffer[buffer_offset + 2] = pixels[source_pixel_offset + 0]; // Red
             } else {
-                // Assuming pixels has R,G,B order for each pixel from source data.
-                // Swap to B,G,R for BMP file.
-                pixel_output_buffer[0] = pixels[source_pixel_offset + 2]; // Blue component
-                pixel_output_buffer[1] = pixels[source_pixel_offset + 1]; // Green component
-                pixel_output_buffer[2] = pixels[source_pixel_offset + 0]; // Red component
+                // Fill with black if out of bounds
+                row_buffer[buffer_offset + 0] = 0;
+                row_buffer[buffer_offset + 1] = 0;
+                row_buffer[buffer_offset + 2] = 0;
             }
-            file.write(reinterpret_cast<const char *>(pixel_output_buffer), bytes_per_pixel);
         }
-        // After writing all pixels for a row, write padding if any.
-        if (padding > 0) {
-            file.write(reinterpret_cast<const char *>(row_padding_buffer), padding);
-        }
+        // Padding is already zeroed in row_buffer (from initialization)
+        file.write(reinterpret_cast<const char *>(row_buffer.data()), row_stride_in_file);
     }
 
     if (!file.good()) {
