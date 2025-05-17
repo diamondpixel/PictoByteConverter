@@ -735,13 +735,6 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
                   int maxMemoryMB, int newMaxImageSizeMB) {
-    if (gDebugMode.load(std::memory_order_relaxed)) {
-        printDebug("parseToImage started. Input: " + input_file + ", Output Base: " + output_base +
-                   ", MaxChunkSizeMB: " + std::to_string(maxChunkSizeMB) + ", MaxThreads: " + std::to_string(maxThreads)
-                   + ", MaxMemoryMB: " + std::to_string(maxMemoryMB) +
-                   ", MaxImageSizeMB: " + std::to_string(newMaxImageSizeMB));
-    }
-
     // --- ResourceManager Setup (Singleton) ---
     auto &resManager = ResourceManager::getInstance();
     if (maxThreads > 0) {
@@ -893,9 +886,19 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     std::atomic<bool> should_terminate_writer(false);
     std::atomic<size_t> processed_chunks_count(0); // To track completion
 
-    // Spawn multiple writer threads
-    size_t num_writer_threads = std::min(resManager.getMaxThreads() / 2, static_cast<size_t>(4u));
+
+    // Ensure we have at least 1 writer thread, but no more than 4
+    size_t available_threads = resManager.getMaxThreads();
+    size_t num_writer_threads = std::max(static_cast<size_t>(1),
+                                         std::min(available_threads / 2, static_cast<size_t>(4u)));
+
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("Creating " + std::to_string(num_writer_threads) + " writer thread(s) with " +
+                   std::to_string(available_threads) + " available threads");
+    }
+
     std::vector<std::thread> writer_threads;
+    writer_threads.reserve(num_writer_threads);
     for (size_t i = 0; i < num_writer_threads; ++i) {
         writer_threads.emplace_back(imageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
     }
@@ -918,6 +921,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         size_t current_chunk_data_size = std::min(estimated_raw_data_payload_capacity_per_chunk, remaining_file_data);
 
         // Check 2: If the calculated data size for this chunk is zero, skip enqueueing a task.
+        // MODIFIED: This check is redundant - if remaining_file_data > 0, current_chunk_data_size will also be > 0
+        // But we'll keep it for defensive programming
         if (current_chunk_data_size == 0) {
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 printDebug("Chunk Loop " + std::to_string(i) + ": calculated current_chunk_data_size is 0. Offset: " +
@@ -925,9 +930,6 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
             }
             continue;
         }
-
-        // Assertion: current_chunk_offset + current_chunk_data_size should now always be <= file_size.
-        // The redundant 'if (current_chunk_offset + current_chunk_data_size > file_size)' block was removed.
 
         if (gDebugMode.load(std::memory_order_relaxed)) {
             const unsigned char *data_start_ptr_for_log = all_file_data_ptr + current_chunk_offset;
@@ -945,6 +947,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                                     std::string(", InputFileTotalSize=") + std::to_string(file_size) +
                                     std::string(", DataStartPtrToPass=") + oss_start_ptr.str() +
                                     std::string(", DataEndPtrToAccess (one past last)=") + oss_end_ptr.str();
+
+            printDebug(debug_msg);
 
             if (!all_file_data_ptr) {
                 printError(
@@ -1014,10 +1018,6 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
 
     // Wait for all processing tasks to complete via ResourceManager
-    // This loop is a more robust way to wait if resManager.waitForAllThreads() isn't enough
-    // or if we want to provide progress.
-    // However, if resManager.waitForAllThreads() is blocking and correct, that's simpler.
-    // Let's assume waitForAllThreads is sufficient and blocks until all runWithThread tasks are done.
     resManager.waitForAllThreads();
 
     if (gDebugMode.load(std::memory_order_relaxed)) {

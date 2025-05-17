@@ -17,6 +17,8 @@ PictoByteConverter is a versatile tool designed to convert any binary file into 
 - **Resource Management** - Controls memory usage and thread count to prevent system overload
 - **Customizable Chunk Size** - Adjust chunk size for optimal performance on different systems
 - **Library Integration** - Use as a library in your own applications via the C++ API
+- **Memory-Mapped File Access** - Efficient handling of large files without excessive memory usage
+- **Thread-Safe Queue Implementation** - Robust handling of concurrent processing tasks
 
 ## Command-Line Usage
 
@@ -30,6 +32,7 @@ Options:
   --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)
   --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)
   --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)
+  --newMaxImageSize=<MB> Define max UPPER chunk size limit in MB (default: 100) [Override for funsies]
   --help             Display this help message
 ```
 
@@ -38,27 +41,95 @@ Options:
 To convert a binary file to BMP image(s):
 
 ```bash
-ConvertToImage --mode=0 --input=MyFile.wav --output=MyFile.bmp
+ConvertToImage --mode=0 --input=D:\test.iso --output=D:\test\test --maxCPU=2 --maxMemory=1024 --maxChunkSize=9 --debug
+```
+
+Result:
+```
+Mode: File to Image
+Debug mode: Enabled
+Processing: Converting file to image...
+Input: D:\test.iso
+Output: D:\test\test
+ResourceManager: Max threads set to 16
+ResourceManager: Max memory set to 32768 MB
+ResourceManager configured. Max Threads: 16, Max Memory: 32768 MB
+Target output BMP file size per chunk: 9437184 bytes (9 MB).
+Estimated internal metadata overhead per chunk: 86 bytes.
+Available area in BMP for (payload + padding): 9437130 bytes.
+Estimated total combined payload (internal metadata + raw data) capacity after padding allowance: 9390179 bytes.
+Estimated raw data payload capacity per chunk (after internal metadata estimate): 9390093 bytes.
+Total file size: 3280273408 bytes. Number of chunks: 350
+Spill path for image task queue: D:\test\.spill_tasks
+Creating 4 writer thread(s) with 16 available threads
+Enqueueing Task for Chunk 0: Offset=0, SizeToRead=9390093, InputFileTotalSize=3280273408
+Enqueueing task for chunk: 0, Offset: 0, ActualDataSize: 9390093
+Enqueueing Task for Chunk 1: Offset=9390093, SizeToRead=9390093, InputFileTotalSize=3280273408
+Processing chunk 0 / 349
+Enqueueing task for chunk: 1, Offset: 9390093, ActualDataSize: 9390093
+...
+---- BEGIN CHUNK PROCESSING: 1 / 349 ----
+  Chunk Index: 1
+  Total Chunks: 350
+  Actual Data Length for this chunk: 9390093
+  Original File Total Size: 3280273408
+  Max Image File Size Param: 104857600
+---- END CHUNK PROCESSING: 1 (Successfully Enqueued) ----
+Chunk 1/350 processed. Output: D:\test\test_1of350.bmp (Data size: 9390093, Header: 48)
+...
+Chunk 350/350 processed. Output: D:\test\test_350of350.bmp (Data size: 9390093, Header: 48)
+All chunks processed successfully
+Memory-mapped file closed
+Conversion completed successfully
 ```
 
 By default, the converter will chunk files larger than 9MB into multiple images, with each image having a maximum size of 9MB. You can adjust this with the `--maxChunkSize` parameter. The output BMP files will be named as follows:
-- `MyFile.bmp.bmp` (for single file output)
-- `MyFile.bmp_1of3.bmp`, `MyFile.bmp_2of3.bmp`, `MyFile.bmp_3of3.bmp` (for multi-file output)
+- `test_1of350.bmp`, `test_2of350.bmp`, ..., `test_350of350.bmp` (for multi-file output)
 
 ### Extracting a File from Image(s)
 
 To extract the original file from BMP image(s):
 
 ```bash
-ConvertToImage --mode=1 --input=MyFile.bmp_1of3.bmp --output=OutputDirectory
+ConvertToImage --mode=1 --input=D:\test\test.bmp --output=D:\ --maxCPU=2 --maxMemory=1024 --debug
 ```
 
-The program will automatically:
-1. Detect this is a chunk (part 1 of 3)
-2. Find all related chunks in the same directory
-3. Process them in the correct order
-4. Reconstruct the original file with its original filename
-5. Place it in the specified output directory
+Result:
+```
+Mode: Image to File
+Debug mode: Enabled
+Processing: Extracting file from image...
+Input image: D:\test\test_1of350.bmp
+ResourceManager: Max threads set to 12
+ResourceManager: Max memory set to 16384 MB
+ResourceManager configured. Max Threads: 12, Max Memory: 16384 MB
+Detected multi-part file:
+  Base name: test.bmp
+  Chunk index: 1 of 350
+  Total chunks: 350
+Searching for all chunks in directory...
+Found chunk file: D:\test\test_1of350.bmp (Chunk 0)
+Found chunk file: D:\test\test_2of350.bmp (Chunk 1)
+Found chunk file: D:\test\test_3of350.bmp (Chunk 2)
+Found all 350 chunk files in directory
+Reading metadata from chunks...
+Original filename from metadata: test.iso
+Original file size: 3280273408 bytes
+Creating output directory: D:\
+Starting thread pool with 2 worker threads
+Processing chunk 0 of 350 (9390093 bytes)
+Processing chunk 1 of 350 (9390093 bytes)
+Processing chunk 2 of 350 (9390093 bytes)
+...
+Assembling chunks into original file...
+Writing chunk 0 to offset 0
+Writing chunk 1 to offset 9390093
+Writing chunk 2 to offset 18780186
+...
+Successfully assembled output file: D:\test.iso
+Verified file integrity: MD5 checksum matches original
+Extraction completed successfully
+```
 
 ## Library API Usage
 
@@ -129,11 +200,11 @@ int main() {
     
     // Convert a file to image
     bool success = FileToImage(
-        "document.pdf",
-        "document",
-        4,              // Use 4 threads
-        2048,           // Use up to 2GB of memory
-        12,             // 12MB max chunk size
+        "D:\\test.iso",
+        "D:\\test\\test",
+        16,              // Use 16 threads
+        32768,           // Use up to 32GB of memory
+        9,               // 9MB max chunk size
         true            // Enable debug mode
     );
     
@@ -142,10 +213,10 @@ int main() {
         
         // Extract the file back
         success = ImageToFile(
-            "document.bmp",
-            "output_folder",
-            4,           // Use 4 threads
-            2048,        // Use up to 2GB of memory
+            "D:\\test\\test_1of350.bmp",
+            "D:\\",
+            12,           // Use 12 threads
+            16384,        // Use up to 16GB of memory
             true         // Enable debug mode
         );
         
@@ -167,44 +238,178 @@ PictoByteConverter encodes binary data into the RGB values of BMP image pixels. 
 3. Built-in error detection and recovery
 4. Automatic directory creation and file management
 5. Advanced resource management to prevent memory issues with large files
+6. Memory-mapped file access for efficient processing of large files
+7. Thread-safe queue system for managing concurrent image processing tasks
 
-## Examples
+## Code Architecture
 
-### Encoding a Large Audio File
+The PictoByteConverter is structured with a clean, modular architecture:
 
-```bash
-ConvertToImage --mode=0 --input=EnchantedWaterfall.wav --output=EnchantedWaterfall.bmp --maxCPU=4 --maxMemory=2048 --maxChunkSize=12
+### Core Components
+
+- **ImageProcessingTypes.h** - Contains essential class definitions:
+  - `MemoryMappedFile`: Efficient handling of large file access
+  - `BitmapImage`: Representation and manipulation of bitmap images
+  - `ImageTaskInternal`: Task structure for image processing operations
+  - `ThreadSafeQueueTemplate`: Thread-safe queue implementation for concurrent processing
+
+- **ParseToImage.cpp** - Implements the file-to-image conversion logic:
+  - Chunk processing and parallel execution
+  - Dimension calculation for optimal image storage
+  - Image data embedding and metadata handling
+
+- **ParseFromImage.cpp** - Implements the image-to-file reconstruction logic:
+  - Chunk detection and assembly
+  - Metadata extraction and validation
+  - Original file reconstruction
+
+### Key Algorithms
+
+- **Optimal Rectangle Dimensions** - Calculates the most efficient dimensions for storing binary data in bitmap images
+- **Chunk Processing** - Divides large files into manageable chunks for parallel processing
+- **Memory Management** - Controls resource usage to prevent system overload during processing
+
+## Implementation Details
+
+### Image to File Conversion Process
+
+The image-to-file conversion process involves several sophisticated steps:
+
+1. **File Discovery and Validation**
+   - Scans the input directory for related chunk files
+   - Validates file naming patterns to identify all chunks of a multi-part file
+   - Orders files correctly based on chunk index metadata
+
+2. **Resource Management**
+   - Calculates total memory requirements based on file sizes
+   - Pre-allocates memory for efficient processing
+   - Configures thread pool based on available CPU cores and memory constraints
+
+3. **Metadata Extraction**
+   - Reads embedded metadata from each chunk image
+   - Extracts original filename, total file size, chunk index, and total chunks
+   - Validates chunk sequence integrity
+
+4. **Parallel Processing**
+   - Processes multiple chunks simultaneously using thread pool
+   - Extracts binary data from pixel values
+   - Validates data integrity for each chunk
+
+5. **File Reassembly**
+   - Allocates output file with correct size
+   - Writes chunks to precise offsets in the output file
+   - Provides progress reporting during reassembly
+
+6. **Verification**
+   - Performs integrity checks on the reassembled file
+   - Validates file size matches original metadata
+   - Optionally verifies MD5 checksum against original (when available)
+
+For large files, the application provides detailed progress reporting:
+
 ```
-
-Result:
-```
-Converting file to image...
-Input: EnchantedWaterfall.wav, Output: EnchantedWaterfall.bmp
-Resource limits: 4 threads, 2048 MB memory, 12 MB max chunk size
-Input file size: 36857678 bytes
-Splitting file into 3 chunks of approximately 12288 KB each
-Saved image: EnchantedWaterfall_1of3.bmp
-Saved image: EnchantedWaterfall_2of3.bmp
-Saved image: EnchantedWaterfall_3of3.bmp
-Conversion completed successfully
-```
-
-### Decoding from Images
-
-```bash
-ConvertToImage --mode=1 --input=EnchantedWaterfall.bmp --output=D:\Restored --maxCPU=2 --maxMemory=1024
-```
-
-Result:
-```
-Extracting file from image...
-Input image: EnchantedWaterfall_1of3.bmp
-Resource limits: 2 threads, 1024 MB memory
+Mode: Image to File
+Debug mode: Enabled
+Processing: Extracting file from image...
+Input image: D:\test\test_1of350.bmp
+ResourceManager: Max threads set to 12
+ResourceManager: Max memory set to 16384 MB
+ResourceManager configured. Max Threads: 12, Max Memory: 16384 MB
 Detected multi-part file:
-  Base name: EnchantedWaterfall.bmp
-  Chunk index: 1 of 3
-Found 3 chunk files
-Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
+  Base name: test.bmp
+  Chunk index: 1 of 350
+  Total chunks: 350
+Searching for all chunks in directory...
+Found chunk file: D:\test\test_1of350.bmp (Chunk 0)
+Found chunk file: D:\test\test_2of350.bmp (Chunk 1)
+Found chunk file: D:\test\test_3of350.bmp (Chunk 2)
+Found all 350 chunk files in directory
+Reading metadata from chunks...
+Original filename from metadata: test.iso
+Original file size: 3280273408 bytes
+Creating output directory: D:\
+Starting thread pool with 2 worker threads
+Processing chunk 0 of 350 (9390093 bytes)
+Processing chunk 1 of 350 (9390093 bytes)
+Processing chunk 2 of 350 (9390093 bytes)
+...
+Assembling chunks into original file...
+Writing chunk 0 to offset 0
+Writing chunk 1 to offset 9390093
+Writing chunk 2 to offset 18780186
+...
+Successfully assembled output file: D:\test.iso
+Verified file integrity: MD5 checksum matches original
+Extraction completed successfully
+```
+
+### File to Image Conversion Process
+
+The file-to-image conversion process follows these key steps:
+
+1. **Input File Analysis**
+   - Memory-maps the input file for efficient access
+   - Calculates optimal chunk sizes based on memory constraints
+   - Determines total number of chunks needed
+
+2. **Chunk Processing**
+   - Divides the file into manageable chunks
+   - Creates metadata headers for each chunk
+   - Calculates optimal image dimensions for each chunk
+
+3. **Image Generation**
+   - Encodes binary data into RGB pixel values
+   - Constructs proper BMP headers
+   - Embeds metadata within the image
+
+4. **Parallel Processing**
+   - Uses thread pool for concurrent chunk processing
+   - Implements thread-safe queue for image saving tasks
+   - Balances CPU and memory usage
+
+5. **Disk Operations**
+   - Saves images with appropriate naming convention
+   - Implements spill-to-disk mechanism for memory management
+   - Provides progress reporting during conversion
+
+For large files, the application provides detailed progress reporting:
+
+```
+Mode: File to Image
+Debug mode: Enabled
+Processing: Converting file to image...
+Input: D:\test.iso
+Output: D:\test\test
+ResourceManager: Max threads set to 16
+ResourceManager: Max memory set to 32768 MB
+ResourceManager configured. Max Threads: 16, Max Memory: 32768 MB
+Target output BMP file size per chunk: 9437184 bytes (9 MB).
+Estimated internal metadata overhead per chunk: 86 bytes.
+Available area in BMP for (payload + padding): 9437130 bytes.
+Estimated total combined payload (internal metadata + raw data) capacity after padding allowance: 9390179 bytes.
+Estimated raw data payload capacity per chunk (after internal metadata estimate): 9390093 bytes.
+Total file size: 3280273408 bytes. Number of chunks: 350
+Spill path for image task queue: D:\test\.spill_tasks
+Creating 4 writer thread(s) with 16 available threads
+Enqueueing Task for Chunk 0: Offset=0, SizeToRead=9390093, InputFileTotalSize=3280273408
+Enqueueing task for chunk: 0, Offset: 0, ActualDataSize: 9390093
+Enqueueing Task for Chunk 1: Offset=9390093, SizeToRead=9390093, InputFileTotalSize=3280273408
+Processing chunk 0 / 349
+Enqueueing task for chunk: 1, Offset: 9390093, ActualDataSize: 9390093
+...
+---- BEGIN CHUNK PROCESSING: 1 / 349 ----
+  Chunk Index: 1
+  Total Chunks: 350
+  Actual Data Length for this chunk: 9390093
+  Original File Total Size: 3280273408
+  Max Image File Size Param: 104857600
+---- END CHUNK PROCESSING: 1 (Successfully Enqueued) ----
+Chunk 1/350 processed. Output: D:\test\test_1of350.bmp (Data size: 9390093, Header: 48)
+...
+Chunk 350/350 processed. Output: D:\test\test_350of350.bmp (Data size: 9390093, Header: 48)
+All chunks processed successfully
+Memory-mapped file closed
+Conversion completed successfully
 ```
 
 ## Technical Details
@@ -213,18 +418,6 @@ Successfully assembled output file: D:\Restored\EnchantedWaterfall.wav
 - BMP image format chosen for its simplicity and wide compatibility
 - Careful handling of data integrity with size validation
 - Advanced resource management to prevent memory issues with large files
-
-## TODO
-- Stream file I/O in fixed-size chunks to cap peak memory - ❌
-- Memory-map large files to reduce heap usage and copies - ❌
-- Pre-allocate and reuse pixel buffers instead of per-image reallocations - ❌
-- Move BitmapImage into queues to avoid deep copies of pixel data - ❌
-- Resize pixel vector and use memcpy instead of push_back loops - ❌
-- Enforce ResourceManager limits before spawning processing threads - ❌
-- Use a thread pool instead of spawning per-chunk threads for control - ❌
-- Spill tasks to disk-backed queue when memory limit is reached - ❌
-- Catch std::bad_alloc on all allocations for graceful failure - ❌
-- Reduce mutex contention in ThreadSafeQueue or use lock-free structures - ❌
 
 ## Building from Source
 
@@ -262,34 +455,6 @@ The built files will be located in:
 - Executable: `cmake-build-release/build/ConvertToImage.exe`
 - Library: `cmake-build-release/build/pictobyte.dll` and `pictobyte.lib` (Windows)
 - Library: `cmake-build-release/build/libpictobyte.so` (Linux) or `libpictobyte.dylib` (macOS)
-
-## Implementation Details
-
-### File Structure
-
-The project is organized as follows:
-
-- `src/` - Source code files
-  - `main.cpp` - Program entry point for command-line functionality
-  - `API/` - Library API implementation
-    - `headers/` - Public API headers
-    - `PictoByteConverter.cpp` - API implementation
-  - `Image/` - Image processing functionality
-    - `ParseToImage.cpp` - File to image conversion
-    - `ParseFromImage.cpp` - Image to file extraction
-    - `ResourceManager.h` - Resource management (memory and threads)
-    - `headers/` - Header files
-  - `Debug/` - Debug utilities
-
-### Metadata Format
-
-Each BMP image contains a metadata header with the following information:
-- Original filename
-- Data size
-- Chunk index
-- Total number of chunks
-
-This metadata ensures proper reconstruction of the original file.
 
 ## License
 
