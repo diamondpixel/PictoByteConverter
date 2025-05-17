@@ -17,6 +17,7 @@ void printUsage() {
     std::cout << "  --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)" << std::endl;
     std::cout << "  --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)" << std::endl;
     std::cout << "  --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)" << std::endl;
+    std::cout << "  --newMaxImageSize=<MB> Maximum BMP image size in MB (default: 100)" << std::endl;
     std::cout << "  --help             Display this help message" << std::endl;
 }
 
@@ -28,6 +29,7 @@ int main(int argc, char* argv[]) {
     int maxThreads = 0;  // Default: auto (determined by system)
     int maxMemoryMB = 1024;  // Default: 1GB
     int maxChunkSizeMB = 9;  // Default: 9MB per chunk
+    int newMaxImageSizeMB = 100; // Default: 100MB max BMP image size
     
     // First pass to check for debug mode
     for (int i = 1; i < argc; i++) {
@@ -128,6 +130,20 @@ int main(int argc, char* argv[]) {
                 maxChunkSizeMB = 9;
             }
         }
+        else if (arg.length() >= 18 && arg.substr(0, 18) == "--newMaxImageSize=") {
+            try {
+                newMaxImageSizeMB = std::stoi(arg.substr(18));
+                if (newMaxImageSizeMB < 100) {
+                    printWarning("Invalid maxImageSize value: " + std::to_string(newMaxImageSizeMB) + " MB (must be >= 100 MB)");
+                    newMaxImageSizeMB = 100; // Default: 100MB
+                } else if (newMaxImageSizeMB > 500) {
+                    printWarning("Very large image sizes (>500 MB) may not be supported by all image viewers");
+                }
+            } catch (const std::exception& e) {
+                printWarning("Invalid maxImageSize value, using default (100 MB)");
+                newMaxImageSizeMB = 100;
+            }
+        }
         else if (arg == "--help") {
             printUsage();
             return 0;
@@ -153,12 +169,6 @@ int main(int argc, char* argv[]) {
     if (debugMode) {
         printStatus("Debug mode: Enabled");
     }
-    
-    // Show resource limits
-    // printStats("Resource limits: " + 
-    //             (maxThreads == 0 ? "Auto" : std::to_string(maxThreads)) + " threads, " + 
-    //             std::to_string(maxMemoryMB) + " MB memory, " + 
-    //             std::to_string(maxChunkSizeMB) + " MB max chunk size");
 
     bool success = false;
     switch (mode) {
@@ -166,7 +176,7 @@ int main(int argc, char* argv[]) {
             printProcessingStep("Converting file to image...");
             printFilePath("Input: " + inputFile);
             printFilePath("Output: " + outputFile);
-            success = parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB);
+            parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB, newMaxImageSizeMB);
             break;
         case 1:
             printProcessingStep("Extracting file from image...");
@@ -178,8 +188,6 @@ int main(int argc, char* argv[]) {
                 printFilePath("Input: " + inputFile);
                 parseFromImage(inputFile, "", maxThreads, maxMemoryMB);
             }
-            // Success message is already printed in parseFromImage function
-            // printSuccess("File successfully extracted from image!");
             break;
         default:
             printError("No valid mode selected");

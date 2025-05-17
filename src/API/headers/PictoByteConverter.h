@@ -35,6 +35,7 @@ namespace PictoByteConverter {
  * @param maxMemoryMB Maximum memory usage in MB
  * @param maxChunkSizeMB Maximum chunk size in MB
  * @param debugMode Enable debug output
+ * @param newMaxImageSizeMB Maximum BMP image size in MB (0 = default 100MB)
  * @return bool True if conversion was successful, false otherwise
  */
 PICTOBYTE_API bool FileToImage(
@@ -43,7 +44,8 @@ PICTOBYTE_API bool FileToImage(
     int maxThreads = 0,
     int maxMemoryMB = 1024,
     int maxChunkSizeMB = 9,
-    bool debugMode = false
+    bool debugMode = false,
+    int newMaxImageSizeMB = 0
 );
 
 /**

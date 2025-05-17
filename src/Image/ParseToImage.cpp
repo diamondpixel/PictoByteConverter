@@ -222,7 +222,7 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
     // Final critical check 1: Can the chosen dimensions (after all adjustments) actually hold the `total_bytes` data payload?
     // This ensures that data isn't truncated due to dimension calculations, clamping, or shrinking attempts.
     // The condition `width * height * bytes_per_pixel` represents the raw pixel data capacity, which must be >= `total_bytes`.
-    if (width == 0 || height == 0 || width * height * bytes_per_pixel < total_bytes) {
+    if (width * height * bytes_per_pixel < total_bytes) {
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Final dimensions " << width << "x" << height
@@ -708,16 +708,18 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  *                   If non-positive, a default (often based on hardware concurrency) might be used.
  * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes. This is used by the 
  *                    `ResourceManager` to throttle operations if memory limits are approached.
+ * @param newMaxImageSizeMB The maximum size for each output BMP image file in megabytes. This overrides the default value.
+ *                       If non-positive, a default of 100MB is used.
  * @return `true` if the conversion process completes successfully and all chunks are processed and saved. 
  *         `false` otherwise (e.g., if the input file is not found, memory allocation errors occur, or other critical failures).
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
-                  int maxMemoryMB) {
+                  int maxMemoryMB, int newMaxImageSizeMB) {
     if (gDebugMode.load(std::memory_order_relaxed)) {
         printDebug("parseToImage started. Input: " + input_file + ", Output Base: " + output_base +
                    ", MaxChunkSizeMB: " + std::to_string(maxChunkSizeMB) + ", MaxThreads: " + std::to_string(maxThreads)
-                   +
-                   ", MaxMemoryMB: " + std::to_string(maxMemoryMB));
+                   + ", MaxMemoryMB: " + std::to_string(maxMemoryMB) + 
+                   ", MaxImageSizeMB: " + std::to_string(newMaxImageSizeMB));
     }
 
     // --- ResourceManager Setup (Singleton) ---
@@ -917,14 +919,6 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                                     std::string(", DataStartPtrToPass=") + oss_start_ptr.str() +
                                     std::string(", DataEndPtrToAccess (one past last)=") + oss_end_ptr.str();
 
-            if (current_chunk_offset + current_chunk_data_size > file_size) {
-                printError(
-                    "CRITICAL_ASSERTION_FAIL_PRE_ENQUEUE: Chunk " + std::to_string(i) + ": offset (" + std::to_string(
-                        current_chunk_offset) +
-                    ") + size (" + std::to_string(current_chunk_data_size) + ") = " +
-                    std::to_string(current_chunk_offset + current_chunk_data_size) +
-                    " exceeds file_size (" + std::to_string(file_size) + ")");
-            }
             if (!all_file_data_ptr) {
                 printError(
                     "CRITICAL_ASSERTION_FAIL_PRE_ENQUEUE: Chunk " + std::to_string(i) + ": all_file_data_ptr is null!");
@@ -941,12 +935,15 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         size_t uniform_chunk_payload_capacity_for_lambda_cap = estimated_raw_data_payload_capacity_per_chunk;
 
         // Capture input_file and output_base by value (copy) for safety in lambda
-        std::string input_file_val_cap = input_file;
-        std::string output_base_val_cap = output_base;
+        const std::string& input_file_val_cap = input_file;
+        const std::string& output_base_val_cap = output_base;
         // image_task_queue is assumed to be the original queue variable in parseToImage's scope
-        size_t actual_max_image_size_bytes_cap_lambda = target_output_bmp_file_size_bytes;
-        // Renamed from actual_max_image_size_bytes
-
+        size_t effective_max_image_size_bytes;
+        if (newMaxImageSizeMB > 0) {
+            effective_max_image_size_bytes = static_cast<size_t>(newMaxImageSizeMB) * 1024 * 1024;
+        } else {
+            effective_max_image_size_bytes = DEFAULT_MAX_IMAGE_SIZE;
+        }
 
         if (gDebugMode.load(std::memory_order_relaxed)) {
             // Explicitly start with std::string
@@ -966,7 +963,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                 uniform_chunk_payload_capacity_for_lambda_cap,
                 input_file_val_cap,
                 output_base_val_cap,
-                actual_max_image_size_bytes_cap_lambda
+                effective_max_image_size_bytes
             ]() {
                 // This code runs in a worker thread
                 processChunk(
@@ -978,7 +975,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                     input_file_val_cap,
                     output_base_val_cap,
                     image_task_queue, // Pass the captured reference
-                    actual_max_image_size_bytes_cap_lambda
+                    effective_max_image_size_bytes
                 );
             });
 
@@ -1096,7 +1093,7 @@ void BitmapImage::save(const std::string &filename) {
     bih.biClrImportant = 0;
 
     // Calculate row padding and actual file size
-    const size_t bytes_per_pixel = 3; // For 24-bit BMP
+    constexpr size_t bytes_per_pixel = 3; // For 24-bit BMP
     size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
     size_t padding = (4 - (data_row_size % 4)) % 4;
     size_t row_stride_in_file = data_row_size + padding; // Size of one row in the BMP file (data + padding)
@@ -1190,9 +1187,6 @@ void BitmapImage::save(const std::string &filename) {
             std::filesystem::remove(filename);
         }
         std::filesystem::rename(temp_filename, filename);
-        /*if (gDebugMode.load(std::memory_order_relaxed)) {
-            printDebug("Successfully saved and renamed " + temp_filename + " to " + filename);
-        }*/
     } catch (const std::filesystem::filesystem_error &e) {
         printError("Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what());
         // Try to clean up the temporary file if rename fails
