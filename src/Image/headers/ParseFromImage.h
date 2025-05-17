@@ -79,6 +79,19 @@ namespace image_parser {
      * @return Vector of files to process
      */
     std::vector<std::string> getFilesToProcess(const std::string &filePattern);
+
+    /**
+     * Extract payload data from a single image file
+     *
+     * @param filename Path to the image file
+     * @param print_mutex Mutex for synchronizing console output
+     * @param debug_mode Explicitly pass debug mode state to ensure thread visibility
+     * @return ChunkInfo structure with the extracted payload and metadata
+     */
+    std::optional<ChunkInfo> extractChunkPayload(
+        const std::string &filename,
+        std::mutex &print_mutex,
+        bool debug_mode = false);
 }
 
 #endif // PARSE_FROM_IMAGE_H

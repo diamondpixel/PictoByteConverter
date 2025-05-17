@@ -90,6 +90,7 @@ void workerThread(ThreadSafeQueue& tasks, std::ifstream& file, size_t bytesPerPi
  * @param maxChunkSizeMB Maximum size in megabytes for each chunk/image
  * @param maxThreads Maximum number of threads to use (0 for default)
  * @param maxMemoryMB Maximum memory to use in MB (0 for default)
+ * @param newMaxImageSizeMB Maximum size in megabytes for each output BMP image (0 for default 100MB)
  * @return True if conversion was successful, false otherwise
  */
-bool parseToImage(const std::string& inputFilePath, const std::string& outputBaseName, int maxChunkSizeMB = 9, int maxThreads = 0, int maxMemoryMB = 0);
+bool parseToImage(const std::string& inputFilePath, const std::string& outputBaseName, int maxChunkSizeMB = 9, int maxThreads = 0, int maxMemoryMB = 0, int newMaxImageSizeMB = 0);

@@ -71,6 +71,9 @@ set(PUBLIC_API_HEADERS
 add_library(pictobyte SHARED ${LIB_SOURCES})
 add_library(PictoByteConverter::pictobyte ALIAS pictobyte)
 
+# Define PICTOBYTE_DLL_EXPORTS for the pictobyte library
+target_compile_definitions(pictobyte PRIVATE PICTOBYTE_DLL_EXPORTS)
+
 # Set library properties
 set_target_properties(pictobyte PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -91,7 +94,6 @@ target_include_directories(pictobyte
 # Create the executable
 add_executable(ConvertToImage 
     "${CMAKE_SOURCE_DIR}/src/main.cpp"
-    "${CMAKE_SOURCE_DIR}/src/Debug/Debug.cpp"  # Explicitly include Debug.cpp
 )
 
 # Link the executable with the library

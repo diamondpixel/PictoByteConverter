@@ -39,7 +39,17 @@ private:
     size_t max_memory_usage;
     std::mutex memory_mutex;
     std::condition_variable memory_cv;
-    
+
+    // Memory pools for reusing allocations
+    struct MemoryPoolEntry {
+        size_t size{0};
+        std::string tag;
+        std::chrono::system_clock::time_point timestamp;
+        bool in_use{false};
+    };
+    std::vector<MemoryPoolEntry> memory_pool;
+    std::mutex pool_mutex;
+
     // Memory tracking
     struct AllocationInfo {
         size_t size{};
@@ -72,6 +82,13 @@ private:
         }
         return oss.str();
     }
+    
+    // Helper method to print debug messages
+    void debugLog(const std::string& message) {
+        if (getDebugMode()) {
+            printMessage(message, true);
+        }
+    }
 
 public:
     /**
@@ -90,7 +107,7 @@ public:
      */
     void setMaxThreads(size_t threads) {
         max_threads = (threads > 0) ? threads : 1;
-        printMessage("ResourceManager: Max threads set to " + std::to_string(max_threads));
+        debugLog("ResourceManager: Max threads set to " + std::to_string(threads));
     }
 
     /**
@@ -98,8 +115,7 @@ public:
      */
     void setMaxMemory(size_t memory_bytes) {
         max_memory_usage = (memory_bytes > 1024 * 1024) ? memory_bytes : 1024 * 1024; // Min 1MB
-        printMessage("ResourceManager: Max memory set to " + 
-                     std::to_string(max_memory_usage / (1024 * 1024)) + " MB");
+        debugLog("ResourceManager: Max memory set to " + std::to_string(max_memory_usage / (1024 * 1024)) + " MB");
     }
     
     /**
@@ -166,11 +182,13 @@ public:
         std::string status = "Memory Status: Using " + formatMemorySize(current_memory_usage) +
                             " of " + formatMemorySize(max_memory_usage) + 
                             " (" + std::to_string(num_allocations) + " active allocations)";
-        printStatus(status);
+        
+        debugLog(status);
         
         // Print detailed report if enabled
-        if (detailed_tracking_enabled && !memory_allocations.empty()) {
-            printMessage("Detailed memory allocations:");
+        if (detailed_tracking_enabled && !memory_allocations.empty() && getDebugMode()) {
+            debugLog("Detailed memory allocations:");
+            
             for (const auto& [id, info] : memory_allocations) {
                 auto now = std::chrono::system_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - info.timestamp).count();
@@ -179,120 +197,162 @@ public:
                                     " Size: " + formatMemorySize(info.size) +
                                     " Age: " + std::to_string(duration) + "s" +
                                     (!info.tag.empty() ? " Tag: " + info.tag : "");
-                printStatus(detail);
+                
+                debugLog(detail);
             }
         }
     }
 
     /**
-     * Acquire memory resources, waiting if necessary
-     * Returns true if memory was allocated, false if not
-     * @param bytes Number of bytes to allocate
-     * @param timeout Time to wait for allocation
-     * @param tag Optional tag to identify this allocation
+     * Get memory from the pool if available, otherwise allocate new memory
+     * @param bytes Number of bytes needed
+     * @param tag Identifier for this memory allocation
+     * @return ID of the memory block that can be used to release it later, or 0 if allocation failed
+     */
+    uintptr_t getPooledMemory(size_t bytes, const std::string& tag = "") {
+        std::unique_lock<std::mutex> pool_lock(pool_mutex);
+        
+        // First, try to find a suitable unused block in the pool
+        for (size_t i = 0; i < memory_pool.size(); i++) {
+            auto& entry = memory_pool[i];
+            if (!entry.in_use && entry.size >= bytes) {
+                // Found a usable block that's big enough
+                entry.in_use = true;
+                entry.tag = tag;
+                entry.timestamp = std::chrono::system_clock::now();
+                
+                // Log reuse
+                std::string message = "Reused memory pool block: " + formatMemorySize(entry.size) + 
+                                     " for " + tag + " (requested " + formatMemorySize(bytes) + ")";
+                debugLog(message);
+                
+                return static_cast<uintptr_t>(i) + 1; // Add 1 to avoid returning 0
+            }
+        }
+        
+        // No suitable block found, need to allocate new memory
+        std::unique_lock<std::mutex> lock(memory_mutex);
+        
+        // Wait until memory is available
+        bool success = memory_cv.wait_for(lock, std::chrono::milliseconds(5000), [this, bytes]() {
+            return (current_memory_usage + bytes) <= max_memory_usage;
+        });
+        
+        if (!success) {
+            debugLog("Memory allocation of " + formatMemorySize(bytes) + " timed out");
+            return 0;
+        }
+        
+        // Allocate memory
+        current_memory_usage += bytes;
+        
+        // Add to pool
+        MemoryPoolEntry new_entry;
+        new_entry.size = bytes;
+        new_entry.tag = tag;
+        new_entry.timestamp = std::chrono::system_clock::now();
+        new_entry.in_use = true;
+        
+        memory_pool.push_back(new_entry);
+        uintptr_t pool_id = memory_pool.size(); // 1-indexed
+        
+        // Record allocation for tracking
+        if (memory_tracking_enabled) {
+            std::lock_guard<std::mutex> tracking_lock(tracking_mutex);
+            uintptr_t alloc_id = ++allocation_id_counter;
+            memory_allocations[alloc_id] = {
+                bytes,
+                tag,
+                std::chrono::system_clock::now()
+            };
+            
+            // Log allocation
+            std::string message = "Memory allocated: " + formatMemorySize(bytes);
+            if (!tag.empty()) {
+                message += " for " + tag;
+            }
+            message += " (Total: " + formatMemorySize(current_memory_usage) + 
+                      ", " + std::to_string(memory_allocations.size()) + " allocations)";
+            
+            debugLog(message);
+        }
+        
+        return pool_id;
+    }
+
+    /**
+     * Release memory back to the pool for reuse
+     * @param pool_id ID returned from getPooledMemory
+     */
+    void releasePooledMemory(uintptr_t pool_id) {
+        if (pool_id == 0) return;
+        
+        std::lock_guard<std::mutex> pool_lock(pool_mutex);
+        
+        // Validate the pool ID
+        size_t index = pool_id - 1;
+        if (index >= memory_pool.size()) {
+            debugLog("Invalid pool ID: " + std::to_string(pool_id));
+            return;
+        }
+        
+        // Mark the block as unused
+        auto& entry = memory_pool[index];
+        if (!entry.in_use) {
+            debugLog("Memory block already released: " + std::to_string(pool_id));
+            return;
+        }
+        
+        entry.in_use = false;
+        
+        std::string message = "Released memory to pool: " + formatMemorySize(entry.size);
+        if (!entry.tag.empty()) {
+            message += " from " + entry.tag;
+        }
+        debugLog(message);
+    }
+
+    /**
+     * For backward compatibility: Existing code can still use allocateMemory/freeMemory,
+     * but behind the scenes we'll use the pooling mechanism
      */
     bool allocateMemory(size_t bytes, 
                        std::chrono::milliseconds timeout = std::chrono::milliseconds(5000),
                        const std::string& tag = "") {
-        std::unique_lock<std::mutex> lock(memory_mutex);
-        
-        // Wait until memory is available or timeout
-        bool success = memory_cv.wait_for(lock, timeout, [this, bytes]() {
-            return (current_memory_usage + bytes) <= max_memory_usage;
-        });
-        
-        if (success) {
-            // Allocate memory
-            current_memory_usage += bytes;
-            
-            // Record allocation if tracking is enabled
-            if (memory_tracking_enabled) {
-                std::lock_guard<std::mutex> tracking_lock(tracking_mutex);
-                uintptr_t alloc_id = ++allocation_id_counter;
-                memory_allocations[alloc_id] = {
-                    bytes,
-                    tag,
-                    std::chrono::system_clock::now()
-                };
-                
-                // Log allocation
-                std::string message = "Memory allocated: " + formatMemorySize(bytes);
-                if (!tag.empty()) {
-                    message += " for " + tag;
-                }
-                message += " (Total: " + formatMemorySize(current_memory_usage) + 
-                          ", " + std::to_string(memory_allocations.size()) + " allocations)";
-                printStatus(message);
-            }
-            return true;
-        }
-        
-        printWarning("Memory allocation of " + formatMemorySize(bytes) + 
-                   " timed out. Current usage: " + formatMemorySize(current_memory_usage) + 
-                   " of " + formatMemorySize(max_memory_usage));
-        return false;
+        uintptr_t pool_id = getPooledMemory(bytes, tag);
+        return (pool_id != 0);
     }
 
     /**
-     * Free memory resources
-     * @param bytes Number of bytes to free
-     * @param tag Optional tag to identify which allocation this is
+     * For backward compatibility: Release memory, but don't actually free it - return to pool
      */
     void freeMemory(size_t bytes, const std::string& tag = "") {
-        size_t adjusted_bytes = bytes;
+        // Find the allocation in the pool by tag or size
+        std::lock_guard<std::mutex> pool_lock(pool_mutex);
         
-        {
-            std::lock_guard<std::mutex> lock(memory_mutex);
-            
-            // Check for underflow
-            if (bytes > current_memory_usage) {
-                adjusted_bytes = current_memory_usage;
-                printWarning("Attempted to free more memory than allocated: " + 
-                           formatMemorySize(bytes) + " > " + formatMemorySize(current_memory_usage));
+        for (size_t i = 0; i < memory_pool.size(); i++) {
+            auto& entry = memory_pool[i];
+            if (entry.in_use && 
+                ((!tag.empty() && entry.tag == tag) || 
+                 (tag.empty() && entry.size == bytes))) {
+                
+                // Mark as available in the pool
+                entry.in_use = false;
+                
+                std::string message = "Released memory to pool: " + formatMemorySize(entry.size);
+                if (!entry.tag.empty()) {
+                    message += " from " + entry.tag;
+                }
+                debugLog(message);
+                
+                return;
             }
-            
-            // Free memory
-            current_memory_usage -= adjusted_bytes;
         }
         
-        // Handle tracking
-        if (memory_tracking_enabled) {
-            std::lock_guard<std::mutex> tracking_lock(tracking_mutex);
-            
-            // Find and remove allocation by tag
-            if (!tag.empty()) {
-                auto it = std::find_if(memory_allocations.begin(), memory_allocations.end(),
-                                      [&tag](const auto& pair) {
-                                          return pair.second.tag == tag;
-                                      });
-                
-                if (it != memory_allocations.end()) {
-                    memory_allocations.erase(it);
-                }
-            } else {
-                // Just remove the first matching allocation by size
-                auto it = std::find_if(memory_allocations.begin(), memory_allocations.end(),
-                                      [bytes](const auto& pair) {
-                                          return pair.second.size == bytes;
-                                      });
-                
-                if (it != memory_allocations.end()) {
-                    memory_allocations.erase(it);
-                }
-            }
-            
-            // Log deallocation
-            std::string message = "Memory freed: " + formatMemorySize(adjusted_bytes);
-            if (!tag.empty()) {
-                message += " from " + tag;
-            }
-            message += " (Remaining: " + formatMemorySize(current_memory_usage) + 
-                      ", " + std::to_string(memory_allocations.size()) + " allocations)";
-            printStatus(message);
-        }
-        
-        // Notify waiting threads
-        memory_cv.notify_one();
+        // If we get here, we didn't find the allocation in the pool
+        // This shouldn't happen with properly paired allocate/free calls
+        debugLog("Warning: Could not find memory allocation to release: " + 
+                  formatMemorySize(bytes) + (tag.empty() ? "" : " tag: " + tag));
     }
 
     /**
@@ -322,7 +382,7 @@ public:
                 // Call the function with the arguments
                 std::apply(f, args);
             } catch (const std::exception& e) {
-                printError("Thread exception: " + std::string(e.what()));
+                debugLog("Thread exception: " + std::string(e.what()));
             }
             
             // Release the thread slot when done
