@@ -51,9 +51,9 @@ Debug mode: Enabled
 Processing: Converting file to image...
 Input: D:\test.iso
 Output: D:\test\test
-ResourceManager: Max threads set to 16
-ResourceManager: Max memory set to 32768 MB
-ResourceManager configured. Max Threads: 16, Max Memory: 32768 MB
+ResourceManager: Max threads set to 2
+ResourceManager: Max memory set to 1024 MB
+ResourceManager configured. Max Threads: 2, Max Memory: 1024 MB
 Target output BMP file size per chunk: 9437184 bytes (9 MB).
 Estimated internal metadata overhead per chunk: 86 bytes.
 Available area in BMP for (payload + padding): 9437130 bytes.
@@ -100,8 +100,8 @@ Mode: Image to File
 Debug mode: Enabled
 Processing: Extracting file from image...
 Input image: D:\test\test_1of350.bmp
-ResourceManager: Max threads set to 12
-ResourceManager: Max memory set to 16384 MB
+ResourceManager: Max threads set to 2
+ResourceManager: Max memory set to 1024 MB
 ResourceManager configured. Max Threads: 12, Max Memory: 16384 MB
 Detected multi-part file:
   Base name: test.bmp
