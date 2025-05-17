@@ -791,7 +791,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
     size_t target_output_bmp_file_size_bytes = static_cast<size_t>(maxChunkSizeMB) * 1024 * 1024;
 
-    const size_t BMP_FILE_AND_INFO_HEADER_SIZE = 14 + 40; // Standard BMP headers
+    constexpr size_t BMP_FILE_AND_INFO_HEADER_SIZE = 14 + 40; // Standard BMP headers
     // Estimate internal metadata overhead (chunk_idx_str, total_chunks_str, filesize_str, original_filename_str, plus null terminators, separators etc.)
     // Increased from +50 to +75 for more robust estimation of numeric strings, separators, and potential EOF markers.
     size_t estimated_internal_metadata_overhead = input_file.length() + 75;
@@ -817,8 +817,9 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // Then D_combined * (1+k) <= available_area_for_payload_and_padding.
     // So, D_combined <= available_area_for_payload_and_padding / (1+k).
     // This D_combined is the target size for (actual internal metadata + raw file data for the chunk).
-    const double padding_allowance_factor = 0.005; // Reserve 0.5% of the combined payload space for BMP row padding.
-    size_t estimated_total_combined_payload_capacity = static_cast<size_t>(
+    constexpr double padding_allowance_factor = 0.005;
+    // Reserve 0.5% of the combined payload space for BMP row padding.
+    auto estimated_total_combined_payload_capacity = static_cast<size_t>(
         static_cast<double>(available_area_for_payload_and_padding) / (1.0 + padding_allowance_factor)
     );
 
@@ -891,7 +892,13 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     ThreadSafeQueueTemplate<ImageTaskInternal> image_task_queue(1000, spill_path_str);
     std::atomic<bool> should_terminate_writer(false);
     std::atomic<size_t> processed_chunks_count(0); // To track completion
-    std::thread writer_thread(imageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
+
+    // Spawn multiple writer threads
+    size_t num_writer_threads = std::min(resManager.getMaxThreads() / 2, static_cast<size_t>(4u));
+    std::vector<std::thread> writer_threads;
+    for (size_t i = 0; i < num_writer_threads; ++i) {
+        writer_threads.emplace_back(imageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
+    }
 
     for (size_t i = 0; i < num_chunks; ++i) {
         size_t current_chunk_offset = i * estimated_raw_data_payload_capacity_per_chunk;
@@ -1018,10 +1025,12 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
             "All chunks processed by threads. Processed count: " + std::to_string(processed_chunks_count.load()));
     }
 
-    // Signal writer thread to terminate and wait for it
+    // Signal writer threads to terminate and wait for them
     should_terminate_writer = true;
-    if (writer_thread.joinable()) {
-        writer_thread.join();
+    for (auto &t: writer_threads) {
+        if (t.joinable()) {
+            t.join();
+        }
     }
 
     fileToMap.close();
@@ -1071,40 +1080,30 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
 void BitmapImage::save(const std::string &filename) {
     std::string temp_filename = filename + ".tmp";
 
+    HANDLE hFile = CreateFile
+    (
+        temp_filename.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr
+    );
 
-    std::ofstream file(temp_filename, std::ios::binary | std::ios::trunc);
-    if (!file.is_open()) {
-        printError("Failed to open temporary file for writing: " + temp_filename);
-        return;
-    }
-
-    // Set a large buffer for the file stream
-    constexpr size_t buffer_size = 1024 * 1024; // 1MB buffer
-    std::vector<char> file_buffer(buffer_size);
-    file.rdbuf()->pubsetbuf(file_buffer.data(), buffer_size);
-
-    if (width <= 0 || height <= 0) {
+    if (hFile == INVALID_HANDLE_VALUE) {
         printError(
-            "Invalid image dimensions for save: " + std::to_string(width) + "x" + std::to_string(height) + " for file "
-            + temp_filename);
-        file.close();
-        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error &e) {
-            printWarning(
-                "BitmapImage::save: Failed to remove temp file (invalid dims): " + temp_filename + " Error: " + e.
-                what());
-        }
+            "Failed to open temporary file for writing: " + temp_filename + ". Error: " +
+            std::to_string(GetLastError()));
         return;
     }
 
-    // BMP File Header
+    // BMP Headers
     BITMAPFILEHEADER bfh;
-    bfh.bfType = 0x4d42; // 'BM'
-    bfh.bfSize = 0; // Will be set later
+    bfh.bfType = 0x4d42;
     bfh.bfReserved1 = 0;
     bfh.bfReserved2 = 0;
-    bfh.bfOffBits = 0; // Will be set later
 
-    // BMP Info Header
     BITMAPINFOHEADER bih;
     bih.biSize = sizeof(BITMAPINFOHEADER);
     bih.biWidth = width;
@@ -1112,95 +1111,55 @@ void BitmapImage::save(const std::string &filename) {
     bih.biPlanes = 1;
     bih.biBitCount = 24;
     bih.biCompression = BI_RGB;
-    bih.biSizeImage = 0; // Will be set later
     bih.biXPelsPerMeter = 0;
     bih.biYPelsPerMeter = 0;
     bih.biClrUsed = 0;
     bih.biClrImportant = 0;
 
-    // Calculate row padding and actual file size
-    constexpr size_t bytes_per_pixel = 3; // For 24-bit BMP
-    size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
-    size_t padding = (4 - (data_row_size % 4)) % 4;
-    size_t row_stride_in_file = data_row_size + padding; // Size of one row in the BMP file (data + padding)
-    size_t actual_image_data_on_disk_size = static_cast<size_t>(height) * row_stride_in_file;
-    size_t total_file_size = sizeof(bfh) + sizeof(bih) + actual_image_data_on_disk_size;
+    constexpr size_t bytes_per_pixel = 3;
+    const size_t data_row_size = static_cast<size_t>(width) * bytes_per_pixel;
+    const size_t padding = (4 - (data_row_size % 4)) % 4;
+    const size_t row_stride_in_file = data_row_size + padding;
+    const size_t actual_image_data_on_disk_size = static_cast<size_t>(height) * row_stride_in_file;
+    const size_t total_file_size = sizeof(bfh) + sizeof(bih) + actual_image_data_on_disk_size;
 
-    // Set file size in the file header
     bfh.bfSize = static_cast<uint32_t>(total_file_size);
     bfh.bfOffBits = sizeof(bfh) + sizeof(bih);
-
-    // Set image size in the info header (size of pixel data on disk including padding)
     bih.biSizeImage = static_cast<uint32_t>(actual_image_data_on_disk_size);
 
-    // Write the file and info headers
-    file.write(reinterpret_cast<const char *>(&bfh), sizeof(bfh));
-    file.write(reinterpret_cast<const char *>(&bih), sizeof(bih));
+    // Write headers
+    DWORD bytes_written;
+    WriteFile(hFile, &bfh, sizeof(bfh), &bytes_written, nullptr);
+    WriteFile(hFile, &bih, sizeof(bih), &bytes_written, nullptr);
+    OVERLAPPED overlapped = {0};
+    overlapped.hEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
-    // BMPs store pixels bottom-to-top. Pixel data in `pixels` is assumed to be compact (no padding within it).
-    // The original data source (e.g. file chunk) is raw bytes. For 24-bit BMP, we interpret 3 bytes as one pixel.
-    // BMP format requires BGR order. We assume `pixels` holds R,G,B order and swap to B,G,R during write.
-
-    unsigned char pixel_output_buffer[bytes_per_pixel]; // To hold B,G,R for one pixel
-    unsigned char row_padding_buffer[3] = {0, 0, 0}; // Max padding is 3 bytes of zeros
-
-    // Allocate row buffer
-    std::vector<unsigned char> row_buffer(row_stride_in_file, 0); // Includes space for padding
-
+    // Buffer for one row
+    std::vector<unsigned char> row_buffer(row_stride_in_file, 0);
     for (int y_bmp = height - 1; y_bmp >= 0; --y_bmp) {
-        // Fill row buffer
         for (int x_pixel = 0; x_pixel < width; ++x_pixel) {
             size_t source_pixel_offset = (static_cast<size_t>(y_bmp) * width + x_pixel) * bytes_per_pixel;
             size_t buffer_offset = x_pixel * bytes_per_pixel;
             if (source_pixel_offset + bytes_per_pixel <= pixels.size()) {
-                // Convert RGB to BGR
                 row_buffer[buffer_offset + 0] = pixels[source_pixel_offset + 2]; // Blue
                 row_buffer[buffer_offset + 1] = pixels[source_pixel_offset + 1]; // Green
                 row_buffer[buffer_offset + 2] = pixels[source_pixel_offset + 0]; // Red
-            } else {
-                // Fill with black if out of bounds
-                row_buffer[buffer_offset + 0] = 0;
-                row_buffer[buffer_offset + 1] = 0;
-                row_buffer[buffer_offset + 2] = 0;
             }
         }
-        // Padding is already zeroed in row_buffer (from initialization)
-        file.write(reinterpret_cast<const char *>(row_buffer.data()), row_stride_in_file);
+        WriteFile(hFile, row_buffer.data(), row_stride_in_file, &bytes_written, nullptr);
     }
 
-    if (!file.good()) {
-        printError("Error occurred while writing pixel data to temporary file: " + temp_filename);
-        file.close();
-        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error &e) {
-            printWarning(
-                "BitmapImage::save: Failed to remove temp file (write error): " + temp_filename + " Error: " + e.
-                what());
-        }
-        return;
-    }
+    CloseHandle(hFile);
+    CloseHandle(overlapped.hEvent);
 
-    file.close();
-    if (!file.good()) {
-        // Check state after closing
-        printError("Error occurred after closing temporary file: " + temp_filename);
-        try { std::filesystem::remove(temp_filename); } catch (const std::filesystem::filesystem_error &e) {
-            printWarning(
-                "BitmapImage::save: Failed to remove temp file (close error): " + temp_filename + " Error: " + e.
-                what());
-        }
-        return;
-    }
-
-    // Attempt to rename the temporary file to the final filename
+    // Rename file
     try {
-        // Remove target file if it exists, to prevent rename error on some systems
         if (std::filesystem::exists(filename)) {
             std::filesystem::remove(filename);
         }
         std::filesystem::rename(temp_filename, filename);
     } catch (const std::filesystem::filesystem_error &e) {
         printError("Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what());
-        // Try to clean up the temporary file if rename fails
         try {
             if (std::filesystem::exists(temp_filename)) {
                 std::filesystem::remove(temp_filename);
