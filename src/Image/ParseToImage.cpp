@@ -884,6 +884,17 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                 num_chunks));
     }
 
+    printSuccess("===== Chunking Parameters =====", true);
+    printSuccess("Target output BMP file size per chunk: " + std::to_string(target_output_bmp_file_size_bytes) + " bytes (" + 
+                 std::to_string(target_output_bmp_file_size_bytes / (1024 * 1024)) + " MB).", true);
+    printSuccess("Estimated internal metadata overhead per chunk: " + std::to_string(estimated_internal_metadata_overhead) + " bytes.", true);
+    printSuccess("Available area in BMP for (payload + padding): " + std::to_string(available_area_for_payload_and_padding) + " bytes.", true);
+    printSuccess("Estimated total combined payload (internal metadata + raw data) capacity after padding allowance: " + 
+                 std::to_string(estimated_total_combined_payload_capacity) + " bytes.", true);
+    printSuccess("Estimated raw data payload capacity per chunk (after internal metadata estimate): " + 
+                 std::to_string(estimated_raw_data_payload_capacity_per_chunk) + " bytes.", true);
+    printSuccess("Total file size: " + std::to_string(file_size) + " bytes. Number of chunks: " + std::to_string(num_chunks), true);
+
     std::string output_dir_str = std::filesystem::path(output_base).parent_path().string();
     std::string queue_name = "ImageTaskQueue";
 
@@ -1117,11 +1128,12 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // Clear any stalled tasks in the ResourceManager
     resManager.clearActiveTasks();
 
+    printSuccess("\n===== Thread Performance Report =====", true);
     // Get performance data after all threads have completed their work but before shutdown
     resManager.printThreadPerformanceReport(true);
     resManager.printMemoryStatus();
 
-    // Print shutdown messages
+    // Shut down thread pools
     processor_pool.shutdown(true);
     writer_pool.shutdown(true);
 
@@ -1134,7 +1146,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     double avg_time_per_chunk_ms = static_cast<double>(duration) / num_chunks;
 
     // Print statistics
-    printSuccess("=== Processing Statistics ===", true);
+    printSuccess("\n=== Processing Statistics ===", true);
     printSuccess("Total file size: " + std::to_string(mb_processed) + " MB", true);
     printSuccess("Number of chunks processed: " + std::to_string(num_chunks), true);
     printSuccess("Processing time: " + std::to_string(seconds) + " seconds", true);
@@ -1144,6 +1156,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     printSuccess("Number of worker threads: " + std::to_string(available_threads), true);
     printSuccess("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()), true);
     printSuccess("Images created: " + std::to_string(images_saved.load()), true);
+    printSuccess("======================================================", true);
+    
     printSuccess("File processing complete.", true);
 
     fileToMap.close();
