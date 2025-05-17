@@ -308,14 +308,20 @@ public:
      */
     void done() {
         std::lock_guard<std::mutex> lock(mutex_);
-        done_.store(true, std::memory_order_release);
         
-        // Notify all waiting threads
-        not_empty_.notify_all();
-        not_full_.notify_all();
-        empty_.notify_all();
-        
-        printDebug("ThreadSafeQueue '" + queue_name_ + "' marked as done");
+        // Only take action if not already done
+        if (!done_.load(std::memory_order_acquire)) {
+            done_.store(true, std::memory_order_release);
+            
+            // Notify all waiting threads
+            not_empty_.notify_all();
+            not_full_.notify_all();
+            empty_.notify_all();
+            
+            // Only print debug message the first time
+            std::string debugText = "ThreadSafeQueue '" + queue_name_ + "' marked as done";
+            printDebug(debugText, false);
+        }
     }
 
     /**

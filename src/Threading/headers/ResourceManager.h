@@ -680,6 +680,16 @@ public:
     }
 
     /**
+     * Clear all active tasks
+     * 
+     * This is useful for cleanup before shutdown to prevent stalled task warnings
+     */
+    void clearActiveTasks() {
+        std::lock_guard<std::mutex> lock(active_tasks_mutex);
+        active_tasks.clear();
+    }
+
+    /**
      * Print thread performance report to debug output
      * 
      * @param detailed Whether to print detailed metrics for each thread
@@ -756,8 +766,16 @@ public:
                 auto running_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - task.start_time).count();
                 
-                ss << "  Thread " << task.thread_id << ": '" << task.task_name 
-                   << "' (running for " << running_time << " ms)\n";
+                // Validate the running time - if it's unrealistically large, it's likely a tracking error
+                // Limit to 24 hours (86,400,000 ms) as a reasonable maximum
+                if (running_time > 86400000) {
+                    running_time = 0;  // Reset to 0 to indicate an error
+                    ss << "  Thread " << task.thread_id << ": '" << task.task_name 
+                       << "' (running time tracking error - task may be stalled)\n";
+                } else {
+                    ss << "  Thread " << task.thread_id << ": '" << task.task_name 
+                       << "' (running for " << running_time << " ms)\n";
+                }
             }
         }
         

@@ -92,8 +92,18 @@ public:
 
     /**
      * @brief Wait for all tasks to complete and then shut down
+     * 
+     * @param print_message Whether to print a shutdown message (default: true)
      */
-    void shutdown();
+    void shutdown(bool print_message = true);
+
+    /**
+     * @brief Asynchronously shut down the thread pool and return a future that resolves when shutdown is complete
+     * 
+     * @param print_message Whether to print a shutdown message (default: true)
+     * @return std::future<void> Future that resolves when the thread pool is fully shut down
+     */
+    std::future<void> shutdown_async(bool print_message = true);
 
     /**
      * @brief Check if the pool is shutting down

@@ -31,7 +31,7 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string&
 }
 
 ThreadPool::~ThreadPool() {
-    shutdown();
+    shutdown(false);
 }
 
 ThreadPool::ThreadPool(ThreadPool&& other) noexcept 
@@ -64,7 +64,7 @@ ThreadPool& ThreadPool::operator=(ThreadPool&& other) noexcept {
     return *this;
 }
 
-void ThreadPool::shutdown() {
+void ThreadPool::shutdown(bool print_message) {
     // Set the shutdown flag
     shutdown_.store(true, std::memory_order_release);
     
@@ -79,11 +79,10 @@ void ThreadPool::shutdown() {
     }
     
     // Log thread pool shutdown
-    printDebug("ThreadPool '" + pool_name_ + "' shut down", true);
-    
-    // Print performance report before shutting down
-    auto& resource_manager = ResourceManager::getInstance();
-    resource_manager.printThreadPerformanceReport(true);
+    if (print_message) {
+        std::string debugText = "ThreadPool '" + pool_name_ + "' shut down";
+        printDebug(debugText, true);
+    }
     
     // Clear the workers
     workers_.clear();
@@ -91,6 +90,26 @@ void ThreadPool::shutdown() {
 
 bool ThreadPool::is_shutting_down() const {
     return shutdown_.load(std::memory_order_acquire);
+}
+
+std::future<void> ThreadPool::shutdown_async(bool print_message) {
+    // Create a new promise for this shutdown request
+    std::promise<void> shutdown_promise;
+    std::future<void> shutdown_future = shutdown_promise.get_future();
+    
+    // Create a thread to handle the shutdown process
+    std::thread shutdown_thread([this, print_message, promise = std::move(shutdown_promise)]() mutable {
+        // Call the synchronous shutdown method
+        this->shutdown(print_message);
+        
+        // Signal that shutdown is complete
+        promise.set_value();
+    });
+    
+    // Detach the thread since we'll wait on the future
+    shutdown_thread.detach();
+    
+    return shutdown_future;
 }
 
 size_t ThreadPool::size() const {

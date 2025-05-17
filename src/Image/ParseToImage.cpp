@@ -34,6 +34,7 @@
 #include <algorithm>     // For std::copy
 #include "headers/ParseToImage.h"       // Header defining the interface
 #include "../Threading/headers/ThreadSafeQueue.h" // New thread-safe queue implementation
+#include "../Threading/headers/ThreadPool.h"      // Thread pool for parallel task execution
 #include "../Image/headers/BitmapImage.h"
 
 #include "../FileSystem/headers/MemoryMappedFile.h"
@@ -829,8 +830,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // Let D_combined = internal metadata + raw file data. Let P_bmp_padding = BMP row padding.
     // We need D_combined + P_bmp_padding <= available_area_for_payload_and_padding.
     // Assume P_bmp_padding = k * D_combined (e.g., padding is 0.5% of D_combined, so k=0.005).
-    // Then D_combined * (1+k) <= available_area_for_payload_and_padding.
-    // So, D_combined <= available_area_for_payload_and_padding / (1+k).
+    // Then D_combined <= available_area_for_payload_and_padding / (1+k).
     // This D_combined is the target size for (actual internal metadata + raw file data for the chunk).
     constexpr double padding_allowance_factor = 0.005;
     // Reserve 0.5% of the combined payload space for BMP row padding.
@@ -908,12 +908,12 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                    std::to_string(available_threads) + " available threads");
     }
 
+    // Create a ThreadPool for image writer threads
+    ThreadPool writer_pool(num_writer_threads, SIZE_MAX, "ImageWriter");
+    
     // Create a modified imageWriterThread that updates the images_saved counter
     auto modifiedImageWriterThread = [images_saved_ptr = &images_saved](ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
         try {
-            // Register this thread with ResourceManager
-            ResourceManager::getInstance().registerThread("ImageWriter");
-            
             // Continue running until told to terminate AND queue is empty
             while (!should_terminate.load(std::memory_order_acquire) || !task_queue.empty()) {
                 // Try to get an item from the queue
@@ -944,24 +944,31 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
             }
-            
-            // Unregister this thread from ResourceManager
-            ResourceManager::getInstance().unregisterThread();
         } catch (const std::exception &e) {
             // Log any thread errors
             printError("Image writer thread error: " + std::string(e.what()));
         }
     };
 
-    std::vector<std::thread> writer_threads;
-    writer_threads.reserve(num_writer_threads);
+    // Submit the image writer tasks to the thread pool
+    std::vector<std::future<void>> writer_futures;
+    writer_futures.reserve(num_writer_threads);
     for (size_t i = 0; i < num_writer_threads; ++i) {
-        writer_threads.emplace_back(modifiedImageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer));
+        writer_futures.push_back(writer_pool.submit(modifiedImageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer)));
     }
     
+    // Create a ThreadPool for chunk processing
+    // Use the remaining threads for chunk processing (at least 1)
+    size_t num_processor_threads = std::max(static_cast<size_t>(1), available_threads - num_writer_threads);
+    ThreadPool processor_pool(num_processor_threads, SIZE_MAX, "ChunkProcessor");
+    
+    if (gDebugMode.load(std::memory_order_relaxed)) {
+        printDebug("Created processor pool with " + std::to_string(num_processor_threads) + " threads");
+    }
+
     // Store futures for worker threads to track their completion
-    std::vector<std::future<void>> futures;
-    futures.reserve(num_chunks);
+    std::vector<std::future<void>> processor_futures;
+    processor_futures.reserve(num_chunks);
 
     for (size_t i = 0; i < num_chunks; ++i) {
         size_t current_chunk_offset = i * estimated_raw_data_payload_capacity_per_chunk;
@@ -1045,14 +1052,11 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
             printDebug(debug_msg);
         }
 
-        // Use std::async to run the task in a worker thread
-        auto future = std::async(std::launch::async, 
+        // Submit the task to the processor thread pool
+        auto future = processor_pool.submit(
             [chunk_index_cap, uniform_chunk_payload_capacity_for_lambda_cap, num_chunks_cap, 
              file_size_cap, base_mmf_ptr_for_lambda_cap, input_file_val_cap, output_base_val_cap,
              &image_task_queue, tasks_pushed_to_queue_ptr = &tasks_pushed_to_queue, effective_max_image_size_bytes]() {
-                // Register this thread with ResourceManager
-                ResourceManager::getInstance().registerThread("ChunkProcessor");
-                
                 // This code runs in a worker thread
                 processChunk(
                     chunk_index_cap,
@@ -1073,12 +1077,9 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                 if (gDebugMode.load(std::memory_order_relaxed)) {
                     printMessage("Worker thread for chunk " + std::to_string(chunk_index_cap) + " completed");
                 }
-                
-                // Unregister this thread from ResourceManager
-                ResourceManager::getInstance().unregisterThread();
             });
         
-        futures.push_back(std::move(future));
+        processor_futures.push_back(std::move(future));
         processed_chunks_count++;
     }
 
@@ -1087,52 +1088,65 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
 
     // Wait for all processing tasks to complete
-    printMessage("Waiting for " + std::to_string(futures.size()) + " worker threads to complete...");
-    for (auto& future : futures) {
+    printMessage("Waiting for " + std::to_string(processor_futures.size()) + " worker threads to complete...");
+    for (auto& future : processor_futures) {
         future.wait();
     }
-    
-    printMessage("All worker threads completed. Queue size: " + std::to_string(image_task_queue.size()));
-    printMessage("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()));
 
     if (gDebugMode.load(std::memory_order_relaxed)) {
         printDebug(
             "All chunks processed by threads. Processed count: " + std::to_string(processed_chunks_count.load()));
     }
 
-    // Signal writer threads to terminate and wait for them
-    printMessage("Signaling writer threads to terminate...");
-    should_terminate_writer = true;
+    // Signal image writer threads to terminate
+    should_terminate_writer.store(true, std::memory_order_release);
+    printMessage("Waiting for image writer threads to complete...");
     
-    printMessage("Waiting for writer threads to complete...");
-    for (auto &t: writer_threads) {
-        if (t.joinable()) {
-            t.join();
-        }
+    // Wait for all writer threads to complete
+    for (auto& future : writer_futures) {
+        future.wait();
     }
-    printMessage("All writer threads completed. Images saved: " + std::to_string(images_saved.load()));
-    
-    fileToMap.close();
+
+    // Mark the queue as done and clear any stalled tasks
+    image_task_queue.done();
+    image_task_queue.clear();  // Clear any remaining tasks to prevent "stalled" task warnings
+
+    // Make sure all threads have completed their work
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Clear any stalled tasks in the ResourceManager
+    resManager.clearActiveTasks();
+
+    // Get performance data after all threads have completed their work but before shutdown
+    resManager.printThreadPerformanceReport(true);
+    resManager.printMemoryStatus();
+
+    // Print shutdown messages
+    processor_pool.shutdown(true);
+    writer_pool.shutdown(true);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     double seconds = duration / 1000.0;
     double mb_processed = static_cast<double>(file_size) / (1024 * 1024);
     double mb_per_second = mb_processed / seconds;
-    double avg_chunk_size_mb = mb_processed / num_chunks;
+    double typical_chunk_size_mb = static_cast<double>(estimated_raw_data_payload_capacity_per_chunk) / (1024 * 1024);
     double avg_time_per_chunk_ms = static_cast<double>(duration) / num_chunks;
 
-    printMessage("=== Processing Statistics ===");
-    printMessage("Total file size: " + std::to_string(mb_processed) + " MB");
-    printMessage("Number of chunks processed: " + std::to_string(num_chunks));
-    printMessage("Processing time: " + std::to_string(seconds) + " seconds");
-    printMessage("Processing speed: " + std::to_string(mb_per_second) + " MB/s");
-    printMessage("Average chunk size: " + std::to_string(avg_chunk_size_mb) + " MB");
-    printMessage("Average time per chunk: " + std::to_string(avg_time_per_chunk_ms) + " ms");
-    printMessage("Number of worker threads: " + std::to_string(available_threads));
-    printMessage("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()));
-    printMessage("Images created: " + std::to_string(images_saved.load()));
-    
-    printMessage("File processing complete.");
+    // Print statistics
+    printSuccess("=== Processing Statistics ===", true);
+    printSuccess("Total file size: " + std::to_string(mb_processed) + " MB", true);
+    printSuccess("Number of chunks processed: " + std::to_string(num_chunks), true);
+    printSuccess("Processing time: " + std::to_string(seconds) + " seconds", true);
+    printSuccess("Processing speed: " + std::to_string(mb_per_second) + " MB/s", true);
+    printSuccess("Typical chunk size: " + std::to_string(typical_chunk_size_mb) + " MB", true);
+    printSuccess("Average time per chunk: " + std::to_string(avg_time_per_chunk_ms) + " ms", true);
+    printSuccess("Number of worker threads: " + std::to_string(available_threads), true);
+    printSuccess("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()), true);
+    printSuccess("Images created: " + std::to_string(images_saved.load()), true);
+    printSuccess("File processing complete.", true);
+
+    fileToMap.close();
+
     return true;
 }
