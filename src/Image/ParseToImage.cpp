@@ -101,15 +101,17 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
     // The formulas are derived from: total_pixels = width * height and aspect_ratio = width / height.
     // So, width = sqrt(total_pixels * aspect_ratio) and height = width / aspect_ratio (or sqrt(total_pixels / aspect_ratio)).
     auto width = static_cast<size_t>(std::sqrt(static_cast<double>(total_pixels * aspect_ratio)));
-    auto height = static_cast<size_t>(width / aspect_ratio); // More numerically stable to calculate height from width if aspect_ratio is not 1.
+    auto height = static_cast<size_t>(width / aspect_ratio);
+    // More numerically stable to calculate height from width if aspect_ratio is not 1.
 
     // Ensure initial dimensions provide enough pixels for all data.
     // This loop iteratively increases dimensions (primarily width, then height via aspect ratio) if the initial calculation (width * height) is insufficient.
-    int emergency_break_initial_sizing = 10000; // Safeguard against excessively long loops due to unusual inputs or floating point inaccuracies.
+    int emergency_break_initial_sizing = 10000;
+    // Safeguard against excessively long loops due to unusual inputs or floating point inaccuracies.
     while (width * height < total_pixels) {
         width++; // Increment width slightly.
         height = static_cast<size_t>(width / aspect_ratio); // Recalculate height to maintain the aspect ratio.
-        
+
         // Safety check: if dimensions become invalid (e.g., height becomes zero due to extreme aspect_ratio or width hitting limits)
         // or if the loop runs too many times, abort.
         if (width == 0 || height == 0 || --emergency_break_initial_sizing <= 0) {
@@ -131,7 +133,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
 
     // Enforce maximum dimensions, typically limited by BMP format specifications (e.g., max value for WORD type in headers, often 65535)
     // or practical constraints (e.g., system resources, display capabilities of image viewers).
-    constexpr size_t max_bitmap_dimension = 65535; // Maximum dimension for BMP (often tied to 16-bit fields in headers).
+    constexpr size_t max_bitmap_dimension = 65535;
+    // Maximum dimension for BMP (often tied to 16-bit fields in headers).
     if (width > max_bitmap_dimension) width = max_bitmap_dimension;
     if (height > max_bitmap_dimension) height = max_bitmap_dimension;
 
@@ -149,8 +152,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
 
     // Calculate the actual file size based on the current width, height, and BMP padding requirements.
     // BMP format requires each row of pixel data to be padded to a multiple of 4 bytes.
-    size_t row_bytes_unpadded = width * bytes_per_pixel;              // Bytes for pixel data in one row, without padding.
-    size_t padding_per_row = (4 - (row_bytes_unpadded % 4)) % 4;    // Bytes needed to pad one row to a multiple of 4.
+    size_t row_bytes_unpadded = width * bytes_per_pixel; // Bytes for pixel data in one row, without padding.
+    size_t padding_per_row = (4 - (row_bytes_unpadded % 4)) % 4; // Bytes needed to pad one row to a multiple of 4.
     size_t row_bytes_padded = row_bytes_unpadded + padding_per_row; // Total bytes for one padded row.
     size_t actual_image_size = bmp_header_size + (height * row_bytes_padded); // Total file size.
 
@@ -163,7 +166,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
         if (--emergency_break_shrinking <= 0) {
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
-                oss << "calculateOptimalRectDimensions: Shrinking loop safety break. ActualImageSize:" << actual_image_size <<
+                oss << "calculateOptimalRectDimensions: Shrinking loop safety break. ActualImageSize:" <<
+                        actual_image_size <<
                         " MaxSizeBytes:" << max_size_bytes;
                 printWarning(oss.str());
             }
@@ -184,7 +188,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
             // be very cautious with further shrinking as it might compromise data storage.
             if (gDebugMode.load(std::memory_order_relaxed)) {
                 std::ostringstream oss;
-                oss << "calculateOptimalRectDimensions: Shrinking might compromise data capacity. Current W:" << width << " H:"
+                oss << "calculateOptimalRectDimensions: Shrinking might compromise data capacity. Current W:" << width
+                        << " H:"
                         << height << ". TotalBytes: " << total_bytes << ". MaxSizeBytes: " << max_size_bytes;
                 printDebug(oss.str()); // Log as INFO/Debug level, not a warning yet.
             }
@@ -226,7 +231,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Final dimensions " << width << "x" << height
-                    << " (raw pixel capacity " << (width * height * bytes_per_pixel) << " bytes) are too small for data_payload (" << total_bytes <<
+                    << " (raw pixel capacity " << (width * height * bytes_per_pixel) <<
+                    " bytes) are too small for data_payload (" << total_bytes <<
                     " bytes) after attempting to meet max_size_bytes "
                     << max_size_bytes << ". Returning {0,0}.";
             printWarning(oss.str());
@@ -240,7 +246,7 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
         if (gDebugMode.load(std::memory_order_relaxed)) {
             std::ostringstream oss;
             oss << "calculateOptimalRectDimensions: Final dimensions " << width << "x" << height
-                    << " (actual image file size " << actual_image_size << " bytes) still exceed max_size_bytes (" 
+                    << " (actual image file size " << actual_image_size << " bytes) still exceed max_size_bytes ("
                     << max_size_bytes << "). Data payload was " << total_bytes << " bytes. Returning {0,0}.";
             printWarning(oss.str());
         }
@@ -253,28 +259,28 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
 
 /**
  * @brief Optimizes dimensions specifically for the last image in a sequence of chunked images.
- * 
+ *
  * The last image in a series (when a large file is split into multiple image chunks)
  * might have different sizing considerations. For instance, it might contain a smaller final
- * data segment or primarily consist of metadata. This function is similar to 
- * `calculateOptimalRectDimensions` but might be tailored for scenarios where `total_bytes` 
+ * data segment or primarily consist of metadata. This function is similar to
+ * `calculateOptimalRectDimensions` but might be tailored for scenarios where `total_bytes`
  * is relatively small (e.g., mostly metadata or a small remaining data part).
  *
  * A key difference or consideration here is how `max_size_bytes` (if applicable implicitly or via a default)
- * is handled for the last chunk. Typically, the last chunk has more flexibility as it doesn't need to 
+ * is handled for the last chunk. Typically, the last chunk has more flexibility as it doesn't need to
  * reserve space for subsequent full-sized chunks.
  * This function aims to find compact yet sufficient dimensions for the `total_bytes` (data + metadata).
  *
- * @param total_bytes Total bytes of data (this should include actual data from the original file segment 
+ * @param total_bytes Total bytes of data (this should include actual data from the original file segment
  *                    AND any metadata being embedded) to store in this last image.
  * @param bytes_per_pixel Number of bytes per pixel (e.g., 3 for 24-bit RGB).
- * @param metadata_size Size of the metadata portion that is included within `total_bytes`. This parameter 
- *                      might be used for more nuanced calculations or logging, but `total_bytes` is the 
+ * @param metadata_size Size of the metadata portion that is included within `total_bytes`. This parameter
+ *                      might be used for more nuanced calculations or logging, but `total_bytes` is the
  *                      primary driver for pixel capacity.
  * @param bmp_header_size Size of the BMP file and info headers in bytes (typically 54 bytes).
  * @param aspect_ratio Desired width:height ratio for the image (e.g., 1.0f for a square). Defaults to 1.0f.
  * @return A `std::pair<size_t, size_t>` containing the calculated width and height.
- *         Returns `{0,0}` if valid dimensions cannot be found (e.g., if `total_bytes` is excessively large 
+ *         Returns `{0,0}` if valid dimensions cannot be found (e.g., if `total_bytes` is excessively large
  *         for reasonable image dimensions or if internal logic fails).
  */
 std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t metadata_size,
@@ -311,29 +317,29 @@ std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t
  * @brief Processes a single chunk of an input file and prepares it for conversion into a bitmap image.
  *
  * This function is a core part of the file-to-image conversion pipeline. It takes a segment (chunk)
- * of the memory-mapped input file data (`all_file_data_ptr` + offset and length), constructs a metadata 
- * header specific to this chunk (containing information like original filename, chunk index, total chunks, 
- * and data size of this chunk), and combines this metadata with the actual chunk data. 
- * It then calculates the optimal dimensions for a BMP image that can store this combined payload, 
+ * of the memory-mapped input file data (`all_file_data_ptr` + offset and length), constructs a metadata
+ * header specific to this chunk (containing information like original filename, chunk index, total chunks,
+ * and data size of this chunk), and combines this metadata with the actual chunk data.
+ * It then calculates the optimal dimensions for a BMP image that can store this combined payload,
  * respecting `max_image_file_size_param`.
- * Finally, it creates a `BitmapImage` object, populates it with the header and chunk data, and queues an 
- * `ImageTaskInternal` (containing the image and output filename) for asynchronous writing to disk by 
+ * Finally, it creates a `BitmapImage` object, populates it with the header and chunk data, and queues an
+ * `ImageTaskInternal` (containing the image and output filename) for asynchronous writing to disk by
  * a separate writer thread.
  *
  * @param chunk_index The 0-based index of the current chunk being processed from the original file.
- * @param chunk_data_max_size The pre-calculated maximum size of original file data that each chunk (except possibly the last) 
+ * @param chunk_data_max_size The pre-calculated maximum size of original file data that each chunk (except possibly the last)
  *                            should contain. The actual data read for this specific chunk might be less if it's the last one.
  * @param total_chunks The total number of chunks the original input file has been divided into.
  * @param original_file_total_size The total size of the original input file in bytes.
  * @param all_file_data_ptr A pointer to the beginning of the memory-mapped data of the entire input file.
  *                          This allows direct access to any part of the file's content without repeated reads.
  * @param original_input_filepath The full path to the original input file (used for extracting filename for metadata).
- * @param output_base_path The base directory and filename prefix where output BMP images will be saved. 
+ * @param output_base_path The base directory and filename prefix where output BMP images will be saved.
  *                         The chunk index and total chunks will be appended to this base to form unique filenames.
- * @param image_task_queue A reference to a thread-safe queue. `ImageTaskInternal` objects, ready for saving to disk, 
- *                         are pushed onto this queue. This allows image saving to be handled by a dedicated writer thread, 
+ * @param image_task_queue A reference to a thread-safe queue. `ImageTaskInternal` objects, ready for saving to disk,
+ *                         are pushed onto this queue. This allows image saving to be handled by a dedicated writer thread,
  *                         decoupling it from the chunk processing logic.
- * @param max_image_file_size_param The maximum allowed size for any single generated BMP image file in bytes. 
+ * @param max_image_file_size_param The maximum allowed size for any single generated BMP image file in bytes.
  *                                  This is passed to `calculateOptimalRectDimensions` or `optimizeLastImageDimensions`.
  */
 void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chunks, size_t original_file_total_size,
@@ -379,7 +385,9 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                 std::string("processChunk: Memory allocation failed for chunk_data_segment: ") + e.what() +
                 std::string(" for chunk ") + std::to_string(chunk_index));
             if (gDebugMode.load(std::memory_order_relaxed)) {
-                printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: bad_alloc for chunk_data_segment) ----");
+                printDebug(
+                    "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) +
+                    " (Early Exit: bad_alloc for chunk_data_segment) ----");
             }
             return; // Cannot proceed with this chunk
         } catch (const std::exception &e) {
@@ -387,7 +395,9 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                 std::string("processChunk: Error copying chunk data: ") + e.what() + std::string(" for chunk ") +
                 std::to_string(chunk_index));
             if (gDebugMode.load(std::memory_order_relaxed)) {
-                printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: std::exception copying chunk data) ----");
+                printDebug(
+                    "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) +
+                    " (Early Exit: std::exception copying chunk data) ----");
             }
             return;
         }
@@ -395,7 +405,9 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
     // else: current_chunk_actual_data_length is 0, chunk_data_segment remains empty, which is valid for a zero-sized final chunk.
 
     if (gDebugMode.load(std::memory_order_relaxed)) {
-        printDebug("---- BEGIN CHUNK PROCESSING: " + std::to_string(chunk_index) + " / " + std::to_string(total_chunks - 1) + " ----");
+        printDebug(
+            "---- BEGIN CHUNK PROCESSING: " + std::to_string(chunk_index) + " / " + std::to_string(total_chunks - 1) +
+            " ----");
         printDebug("  Chunk Index: " + std::to_string(chunk_index));
         printDebug("  Total Chunks: " + std::to_string(total_chunks));
         printDebug("  Actual Data Length for this chunk: " + std::to_string(current_chunk_actual_data_length));
@@ -418,7 +430,9 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                                         " has current_chunk_actual_data_length > 0 but chunk_data_segment is empty.");
             printError(error_msg);
             if (gDebugMode.load(std::memory_order_relaxed)) {
-                printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: empty chunk_data_segment with positive length) ----");
+                printDebug(
+                    "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) +
+                    " (Early Exit: empty chunk_data_segment with positive length) ----");
             }
             return;
         }
@@ -536,7 +550,8 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
                                 + le.what() + std::string(" for chunk ") + std::to_string(chunk_index);
         printError(error_msg);
         if (gDebugMode.load(std::memory_order_relaxed)) {
-            printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: length_error) ----");
+            printDebug(
+                "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: length_error) ----");
         }
         return; // Added return based on previous pattern for critical errors
     } catch (const std::bad_alloc &ba) {
@@ -552,13 +567,16 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
             std::string("processChunk: Generic std::exception during vector reserve/insert: ") + e.what() +
             std::string(" for chunk ") + std::to_string(chunk_index));
         if (gDebugMode.load(std::memory_order_relaxed)) {
-            printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: std::exception) ----");
+            printDebug(
+                "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: std::exception) ----");
         }
         return; // Don't proceed
     }
 
     if (gDebugMode.load(std::memory_order_relaxed)) {
-        printDebug("  Combined Data Payload Size (after header and data insert): " + std::to_string(combined_data_for_image.size()));
+        printDebug(
+            "  Combined Data Payload Size (after header and data insert): " + std::to_string(
+                combined_data_for_image.size()));
         // Max image file size parameter is already printed in the top block
         // printDebug("  Max Image File Size Parameter (context): " + std::to_string(max_image_file_size_param));
     }
@@ -589,7 +607,9 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
             printError(oss.str()); // Using printError for this diagnostic error
         }
         if (gDebugMode.load(std::memory_order_relaxed)) {
-            printDebug("---- END CHUNK PROCESSING: " + std::to_string(chunk_index) + " (Early Exit: invalid dimensions calculated) ----");
+            printDebug(
+                "---- END CHUNK PROCESSING: " + std::to_string(chunk_index) +
+                " (Early Exit: invalid dimensions calculated) ----");
         }
         return; // Skips creating an image for this chunk
     }
@@ -626,8 +646,8 @@ void processChunk(int chunk_index, size_t chunk_data_max_size, size_t total_chun
  * which handles the low-level details of writing the BMP headers and pixel data to the specified file.
  * Includes basic error handling for the save operation and logs success or failure.
  *
- * @param task A constant reference to the `ImageTaskInternal` object. This object contains the 
- *             `BitmapImage` (which itself holds pixel data and dimensions) and the `filename` 
+ * @param task A constant reference to the `ImageTaskInternal` object. This object contains the
+ *             `BitmapImage` (which itself holds pixel data and dimensions) and the `filename`
  *             where the image should be saved.
  */
 void saveImage(const ImageTaskInternal &task) {
@@ -649,18 +669,18 @@ void saveImage(const ImageTaskInternal &task) {
 /**
  * @brief Function executed by the dedicated image writer thread.
  *
- * This thread continuously monitors the `task_queue` for `ImageTaskInternal` objects. 
+ * This thread continuously monitors the `task_queue` for `ImageTaskInternal` objects.
  * When a task becomes available (i.e., a processed chunk is ready to be saved as an image),
  * this thread dequeues it and calls the `saveImage` function to write the corresponding BMP image to disk.
- * The thread continues to run and process tasks until the `should_terminate` flag is set to `true` 
+ * The thread continues to run and process tasks until the `should_terminate` flag is set to `true`
  * AND the `task_queue` becomes empty, ensuring all pending images are saved before exiting.
  * This design decouples image processing (which can be CPU-bound) from image saving (which is I/O-bound),
  * potentially improving overall application throughput and responsiveness.
  *
- * @param task_queue A reference to the thread-safe queue (`ThreadSafeQueueTemplate<ImageTaskInternal>`) 
+ * @param task_queue A reference to the thread-safe queue (`ThreadSafeQueueTemplate<ImageTaskInternal>`)
  *                   from which image saving tasks are retrieved.
- * @param should_terminate An atomic boolean flag. When the main processing logic decides that no more tasks 
- *                         will be added and work is complete, it sets this flag to `true`. The writer thread 
+ * @param should_terminate An atomic boolean flag. When the main processing logic decides that no more tasks
+ *                         will be added and work is complete, it sets this flag to `true`. The writer thread
  *                         will then finish processing any remaining items in the queue and subsequently terminate.
  */
 void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
@@ -696,21 +716,21 @@ void imageWriterThread(ThreadSafeQueueTemplate<ImageTaskInternal> &task_queue, s
  * 7. Waiting for all chunk processing tasks and image writing tasks to complete.
  * 8. Performing cleanup operations, such as unmapping the input file and ensuring all threads are properly joined.
  *
- * The output consists of one or more BMP images. Each image contains a segment of the original file's data, 
+ * The output consists of one or more BMP images. Each image contains a segment of the original file's data,
  * along with embedded metadata necessary for potential reassembly of the original file from these images.
  *
  * @param input_file The path to the binary file that needs to be converted into BMP images.
- * @param output_base The base name (and potentially path) for the output BMP files. A chunk index and total chunk count 
+ * @param output_base The base name (and potentially path) for the output BMP files. A chunk index and total chunk count
  *                    (e.g., "_1ofN.bmp") will be appended to this base to create unique filenames for each image chunk.
- * @param maxChunkSizeMB The maximum desired size for each data chunk (extracted from the original file) in megabytes. 
+ * @param maxChunkSizeMB The maximum desired size for each data chunk (extracted from the original file) in megabytes.
  *                       The actual BMP image file size might be larger due to BMP overhead (headers, padding) and embedded metadata.
- * @param maxThreads The maximum number of worker threads to use for processing file chunks concurrently. 
+ * @param maxThreads The maximum number of worker threads to use for processing file chunks concurrently.
  *                   If non-positive, a default (often based on hardware concurrency) might be used.
- * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes. This is used by the 
+ * @param maxMemoryMB The maximum estimated memory usage for the entire application in megabytes. This is used by the
  *                    `ResourceManager` to throttle operations if memory limits are approached.
  * @param newMaxImageSizeMB The maximum size for each output BMP image file in megabytes. This overrides the default value.
  *                       If non-positive, a default of 100MB is used.
- * @return `true` if the conversion process completes successfully and all chunks are processed and saved. 
+ * @return `true` if the conversion process completes successfully and all chunks are processed and saved.
  *         `false` otherwise (e.g., if the input file is not found, memory allocation errors occur, or other critical failures).
  */
 bool parseToImage(const std::string &input_file, const std::string &output_base, int maxChunkSizeMB, int maxThreads,
@@ -718,7 +738,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     if (gDebugMode.load(std::memory_order_relaxed)) {
         printDebug("parseToImage started. Input: " + input_file + ", Output Base: " + output_base +
                    ", MaxChunkSizeMB: " + std::to_string(maxChunkSizeMB) + ", MaxThreads: " + std::to_string(maxThreads)
-                   + ", MaxMemoryMB: " + std::to_string(maxMemoryMB) + 
+                   + ", MaxMemoryMB: " + std::to_string(maxMemoryMB) +
                    ", MaxImageSizeMB: " + std::to_string(newMaxImageSizeMB));
     }
 
@@ -935,8 +955,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         size_t uniform_chunk_payload_capacity_for_lambda_cap = estimated_raw_data_payload_capacity_per_chunk;
 
         // Capture input_file and output_base by value (copy) for safety in lambda
-        const std::string& input_file_val_cap = input_file;
-        const std::string& output_base_val_cap = output_base;
+        const std::string &input_file_val_cap = input_file;
+        const std::string &output_base_val_cap = output_base;
         // image_task_queue is assumed to be the original queue variable in parseToImage's scope
         size_t effective_max_image_size_bytes;
         if (newMaxImageSizeMB > 0) {
