@@ -760,6 +760,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // --- Setup ---
     // --- ResourceManager Setup (Singleton) ---
     auto &resManager = ResourceManager::getInstance();
+
     if (maxThreads > 0) {
         resManager.setMaxThreads(maxThreads);
     } else {
@@ -884,17 +885,6 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                 num_chunks));
     }
 
-    printSuccess("===== Chunking Parameters =====", true);
-    printSuccess("Target output BMP file size per chunk: " + std::to_string(target_output_bmp_file_size_bytes) + " bytes (" + 
-                 std::to_string(target_output_bmp_file_size_bytes / (1024 * 1024)) + " MB).", true);
-    printSuccess("Estimated internal metadata overhead per chunk: " + std::to_string(estimated_internal_metadata_overhead) + " bytes.", true);
-    printSuccess("Available area in BMP for (payload + padding): " + std::to_string(available_area_for_payload_and_padding) + " bytes.", true);
-    printSuccess("Estimated total combined payload (internal metadata + raw data) capacity after padding allowance: " + 
-                 std::to_string(estimated_total_combined_payload_capacity) + " bytes.", true);
-    printSuccess("Estimated raw data payload capacity per chunk (after internal metadata estimate): " + 
-                 std::to_string(estimated_raw_data_payload_capacity_per_chunk) + " bytes.", true);
-    printSuccess("Total file size: " + std::to_string(file_size) + " bytes. Number of chunks: " + std::to_string(num_chunks), true);
-
     std::string output_dir_str = std::filesystem::path(output_base).parent_path().string();
     std::string queue_name = "ImageTaskQueue";
 
@@ -921,7 +911,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
 
     // Create a ThreadPool for image writer threads
     ThreadPool writer_pool(num_writer_threads, SIZE_MAX, "ImageWriter");
-    
+
     // Create a modified imageWriterThread that updates the images_saved counter
     auto modifiedImageWriterThread = [images_saved_ptr = &images_saved](ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
         try {
@@ -967,12 +957,12 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     for (size_t i = 0; i < num_writer_threads; ++i) {
         writer_futures.push_back(writer_pool.submit(modifiedImageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer)));
     }
-    
+
     // Create a ThreadPool for chunk processing
     // Use the remaining threads for chunk processing (at least 1)
     size_t num_processor_threads = std::max(static_cast<size_t>(1), available_threads - num_writer_threads);
     ThreadPool processor_pool(num_processor_threads, SIZE_MAX, "ChunkProcessor");
-    
+
     if (gDebugMode.load(std::memory_order_relaxed)) {
         printDebug("Created processor pool with " + std::to_string(num_processor_threads) + " threads");
     }
@@ -1020,11 +1010,11 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
 
             // Explicitly start with std::string
             std::string debug_msg = std::string("Enqueueing Task for Chunk ") + std::to_string(i) +
-                                    std::string(": Offset=") + std::to_string(current_chunk_offset) +
-                                    std::string(", SizeToRead=") + std::to_string(current_chunk_data_size) +
-                                    std::string(", InputFileTotalSize=") + std::to_string(file_size) +
-                                    std::string(", DataStartPtrToPass=") + oss_start_ptr.str() +
-                                    std::string(", DataEndPtrToAccess (one past last)=") + oss_end_ptr.str();
+                                    std::string(": \n Offset=") + std::to_string(current_chunk_offset) +
+                                    std::string(", \n SizeToRead=") + std::to_string(current_chunk_data_size) +
+                                    std::string(", \n InputFileTotalSize=") + std::to_string(file_size) +
+                                    std::string(", \n DataStartPtrToPass=") + oss_start_ptr.str() +
+                                    std::string(", \n DataEndPtrToAccess (one past last)=") + oss_end_ptr.str();
 
             printDebug(debug_msg);
 
@@ -1046,7 +1036,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         // Create copies of the strings for the lambda
         const std::string& input_file_val_cap = input_file;
         const std::string& output_base_val_cap = output_base;
-        
+
         // image_task_queue is assumed to be the original queue variable in parseToImage's scope
         size_t effective_max_image_size_bytes;
         if (newMaxImageSizeMB > 0) {
@@ -1065,7 +1055,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
 
         // Submit the task to the processor thread pool
         auto future = processor_pool.submit(
-            [chunk_index_cap, uniform_chunk_payload_capacity_for_lambda_cap, num_chunks_cap, 
+            [chunk_index_cap, uniform_chunk_payload_capacity_for_lambda_cap, num_chunks_cap,
              file_size_cap, base_mmf_ptr_for_lambda_cap, input_file_val_cap, output_base_val_cap,
              &image_task_queue, tasks_pushed_to_queue_ptr = &tasks_pushed_to_queue, effective_max_image_size_bytes]() {
                 // This code runs in a worker thread
@@ -1080,16 +1070,16 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                     image_task_queue, // Pass the captured reference
                     effective_max_image_size_bytes
                 );
-                
+
                 // Increment the counter for tasks pushed to queue
                 tasks_pushed_to_queue_ptr->fetch_add(1, std::memory_order_relaxed);
-                
+
                 // Use printMessage instead of printDebug since it's more likely to be accessible
                 if (gDebugMode.load(std::memory_order_relaxed)) {
                     printMessage("Worker thread for chunk " + std::to_string(chunk_index_cap) + " completed");
                 }
             });
-        
+
         processor_futures.push_back(std::move(future));
         processed_chunks_count++;
     }
@@ -1112,7 +1102,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // Signal image writer threads to terminate
     should_terminate_writer.store(true, std::memory_order_release);
     printMessage("Waiting for image writer threads to complete...");
-    
+
     // Wait for all writer threads to complete
     for (auto& future : writer_futures) {
         future.wait();
@@ -1128,12 +1118,11 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     // Clear any stalled tasks in the ResourceManager
     resManager.clearActiveTasks();
 
-    printSuccess("\n===== Thread Performance Report =====", true);
     // Get performance data after all threads have completed their work but before shutdown
     resManager.printThreadPerformanceReport(true);
     resManager.printMemoryStatus();
 
-    // Shut down thread pools
+    // Print shutdown messages
     processor_pool.shutdown(true);
     writer_pool.shutdown(true);
 
@@ -1146,7 +1135,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     double avg_time_per_chunk_ms = static_cast<double>(duration) / num_chunks;
 
     // Print statistics
-    printSuccess("\n=== Processing Statistics ===", true);
+    printSuccess("=== Processing Statistics ===", true);
     printSuccess("Total file size: " + std::to_string(mb_processed) + " MB", true);
     printSuccess("Number of chunks processed: " + std::to_string(num_chunks), true);
     printSuccess("Processing time: " + std::to_string(seconds) + " seconds", true);
