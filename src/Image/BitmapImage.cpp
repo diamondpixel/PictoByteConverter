@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <windows.h>
+#include <cassert>
+#include <limits>
 
 /**
  * @brief Constructor for the `BitmapImage` class.
@@ -110,7 +112,8 @@ void BitmapImage::save(const std::string &filename) {
                 row_buffer[buffer_offset + 2] = pixels[source_pixel_offset + 0]; // Red
             }
         }
-        WriteFile(hFile, row_buffer.data(), row_stride_in_file, &bytes_written, nullptr);
+        assert(row_stride_in_file <= std::numeric_limits<DWORD>::max() && "row_stride_in_file exceeds DWORD limits!");
+        WriteFile(hFile, row_buffer.data(), static_cast<DWORD>(row_stride_in_file), &bytes_written, nullptr);
     }
 
     CloseHandle(hFile);
