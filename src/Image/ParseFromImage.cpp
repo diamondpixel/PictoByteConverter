@@ -9,13 +9,18 @@
 #include <cctype>
 #include <map>
 #include <optional>
-#include "headers/ParseFromImage.h"
-
 #include <future>
+#include <cstdlib>
+#include <cerrno>
+#include <cassert>
+#include <limits>
 
+#include "headers/ParseFromImage.h"
 #include "headers/Bitmap.hpp"
-#include "../Threading/headers/ResourceManager.h"
 #include "../Debug/headers/Debug.h"
+#include "../Threading/headers/ThreadPool.h"
+#include "../Threading/headers/ResourceManager.h"
+
 
 namespace image_parser {
     /**
@@ -136,7 +141,8 @@ namespace image_parser {
      * @param pre_allocated_size Size that's already been allocated for this image (pass 0 if none)
      * @return Vector containing the extracted pixel data
      */
-    std::vector<unsigned char> extractPixelData(const bitmap_image &image, size_t pre_allocated_size = 0) {
+    std::vector<unsigned char> extractPixelData(const bitmap_image &image,
+                                                [[maybe_unused]] size_t pre_allocated_size = 0) {
         unsigned int width = image.width();
         unsigned int height = image.height();
 
@@ -185,8 +191,8 @@ namespace image_parser {
             }
 
             // Get image dimensions
-            unsigned int width = image.width();
-            unsigned int height = image.height();
+            [[maybe_unused]] unsigned int width = image.width();
+            [[maybe_unused]] unsigned int height = image.height();
 
             // Extract all pixel data from the image - now always using global memory
             std::vector<unsigned char> data = extractPixelData(image, 0);
@@ -365,7 +371,7 @@ namespace image_parser {
                             std::string index_str = matches[1].str();
                             int index = std::stoi(index_str);
                             indexed_files.emplace_back(index, file_full_path);
-                        } catch (const std::exception &e) {
+                        } catch (const std::exception &[[maybe_unused]] e) {
                             // Skip files with conversion errors
                         }
                     }
@@ -441,7 +447,7 @@ namespace image_parser {
                 int index_b = std::stoi(matches_b[1].str());
                 // Sort in ascending order (lowest first)
                 return index_a < index_b;
-            } catch (const std::exception &e) {
+            } catch (const std::exception &[[maybe_unused]] e) {
                 // Fall back if conversion fails
             }
         }
@@ -456,7 +462,7 @@ namespace image_parser {
                 int num_a = std::stoi(matches_a[1].str());
                 int num_b = std::stoi(matches_b[1].str());
                 return num_a < num_b;
-            } catch (const std::exception &e) {
+            } catch (const std::exception &[[maybe_unused]] e) {
                 // Fall back if conversion fails
             }
         }
@@ -481,15 +487,15 @@ namespace image_parser {
         // Check if this is a chunk file (contains "of" in the filename followed by a number and .bmp)
         std::filesystem::path input_path(filename);
         std::string filename_only = input_path.filename().string();
-        size_t of_pos = filename_only.find("of");
+        size_t filename_only_of_pos = filename_only.find("of"); // Renamed from of_pos_check
 
         if (!is_pattern
             && !is_directory
             && std::filesystem::exists(filename)
-            && of_pos != std::string::npos
-            && of_pos > 1) {
+            && filename_only_of_pos != std::string::npos
+            && filename_only_of_pos > 1) {
             printHighlight("Detected chunked file pattern in: " + filename_only);
-            size_t underscore_pos = filename_only.find_last_of('_', of_pos - 1);
+            size_t underscore_pos = filename_only.find_last_of('_', filename_only_of_pos - 1);
 
             if (underscore_pos != std::string::npos) {
                 std::string base_name = filename_only.substr(0, underscore_pos);
@@ -604,10 +610,10 @@ namespace image_parser {
             std::filesystem::path directory = full_path.parent_path();
 
             // Check if filename contains _Xof pattern
-            size_t of_pos = filename_str.find("of");
-            if (of_pos != std::string::npos && of_pos > 1) {
+            size_t filename_str_of_pos = filename_str.find("of"); // Renamed from of_pos_check
+            if (filename_str_of_pos != std::string::npos && filename_str_of_pos > 1) {
                 // Extract the base name (everything before _Xof)
-                size_t underscore_pos = filename_str.rfind('_', of_pos - 1);
+                size_t underscore_pos = filename_str.rfind('_', filename_str_of_pos - 1);
 
                 if (underscore_pos != std::string::npos) {
                     std::string base_name = filename_str.substr(0, underscore_pos);
@@ -854,7 +860,10 @@ namespace image_parser {
                 chunks[chunk.chunkIndex] = std::move(chunk);
             } else {
                 // If index info is missing, use file order as fallback
-                chunks[chunks.size() + 1] = std::move(chunk);
+                assert(
+                    (chunks.size() + 1) <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
+                    "Chunk fallback index exceeds INT_MAX!");
+                chunks[static_cast<int>(chunks.size() + 1)] = std::move(chunk);
             }
         }
 
@@ -928,10 +937,14 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
             std::lock_guard<std::mutex> lock(gConsoleMutex);
 
             // Force set it if we detect it's off but should be on
-            if (!current_debug_mode && getenv("DEBUG") != nullptr) {
+            char *debug_env_value = nullptr;
+            size_t len = 0;
+            errno_t err = _dupenv_s(&debug_env_value, &len, "DEBUG");
+            if (!current_debug_mode && err == 0 && debug_env_value != nullptr) {
                 gDebugMode.store(true, std::memory_order_seq_cst);
                 current_debug_mode = true;
             }
+            free(debug_env_value); // Free the buffer allocated by _dupenv_s
 
             // If debug mode is on, print a confirmation message
             if (current_debug_mode) {
@@ -1125,3 +1138,5 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
         printError("Error during image to file conversion: " + std::string(e.what()));
     }
 }
+
+// ... rest of the code remains the same ...

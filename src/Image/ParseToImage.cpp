@@ -39,6 +39,9 @@
 
 #include "../FileSystem/headers/MemoryMappedFile.h"
 
+#include <cassert> // Added for assert
+#include <limits>  // Added for std::numeric_limits
+
 // Define DEFAULT_MAX_IMAGE_SIZE here. This constant specifies the default upper limit
 // for the size of any single generated BMP image file. It helps in managing output file sizes
 // and preventing excessively large images. This value can be overridden by user-provided parameters
@@ -287,7 +290,8 @@ std::pair<size_t, size_t> calculateOptimalRectDimensions(size_t total_bytes, siz
  *         for reasonable image dimensions or if internal logic fails).
  */
 std::pair<size_t, size_t> optimizeLastImageDimensions(size_t total_bytes, size_t bytes_per_pixel, size_t metadata_size,
-                                                      size_t bmp_header_size, float aspect_ratio = 1.0f) {
+                                                      [[maybe_unused]] size_t bmp_header_size,
+                                                      float aspect_ratio = 1.0f) {
     // For last chunk, we need to account for both metadata and file data
     size_t total_data_size = metadata_size + total_bytes;
     size_t total_pixels_needed = (total_data_size + bytes_per_pixel - 1) / bytes_per_pixel;
@@ -685,7 +689,7 @@ void imageWriterThread(ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atom
     try {
         // Register this thread with ResourceManager
         ResourceManager::getInstance().registerThread("ImageWriter");
-        
+
         // Continue running until told to terminate AND queue is empty
         while (!should_terminate.load(std::memory_order_acquire) || !task_queue.empty()) {
             // Try to get an item from the queue
@@ -713,7 +717,7 @@ void imageWriterThread(ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atom
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         }
-        
+
         // Unregister this thread from ResourceManager
         ResourceManager::getInstance().unregisterThread();
     } catch (const std::exception &e) {
@@ -756,7 +760,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
                   int maxMemoryMB, int newMaxImageSizeMB) {
     // Record start time for performance metrics
     auto start_time = std::chrono::high_resolution_clock::now();
-    
+
     // --- Setup ---
     // --- ResourceManager Setup (Singleton) ---
     auto &resManager = ResourceManager::getInstance();
@@ -896,8 +900,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     ThreadSafeQueue<ImageTaskInternal> image_task_queue(1000, queue_name);
     std::atomic<bool> should_terminate_writer(false);
     std::atomic<size_t> processed_chunks_count(0); // To track completion
-    std::atomic<size_t> tasks_pushed_to_queue(0);  // Track how many tasks were pushed to the queue
-    std::atomic<size_t> images_saved(0);           // Track how many images were actually saved
+    std::atomic<size_t> tasks_pushed_to_queue(0); // Track how many tasks were pushed to the queue
+    std::atomic<size_t> images_saved(0); // Track how many images were actually saved
 
     // Ensure we have at least 1 writer thread, but no more than 4
     size_t available_threads = resManager.getMaxThreads();
@@ -913,7 +917,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     ThreadPool writer_pool(num_writer_threads, SIZE_MAX, "ImageWriter");
 
     // Create a modified imageWriterThread that updates the images_saved counter
-    auto modifiedImageWriterThread = [images_saved_ptr = &images_saved](ThreadSafeQueue<ImageTaskInternal> &task_queue, std::atomic<bool> &should_terminate) {
+    auto modifiedImageWriterThread = [images_saved_ptr = &images_saved](ThreadSafeQueue<ImageTaskInternal> &task_queue,
+                                                                        std::atomic<bool> &should_terminate) {
         try {
             // Continue running until told to terminate AND queue is empty
             while (!should_terminate.load(std::memory_order_acquire) || !task_queue.empty()) {
@@ -952,10 +957,11 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     };
 
     // Submit the image writer tasks to the thread pool
-    std::vector<std::future<void>> writer_futures;
+    std::vector<std::future<void> > writer_futures;
     writer_futures.reserve(num_writer_threads);
     for (size_t i = 0; i < num_writer_threads; ++i) {
-        writer_futures.push_back(writer_pool.submit(modifiedImageWriterThread, std::ref(image_task_queue), std::ref(should_terminate_writer)));
+        writer_futures.push_back(writer_pool.submit(modifiedImageWriterThread, std::ref(image_task_queue),
+                                                    std::ref(should_terminate_writer)));
     }
 
     // Create a ThreadPool for chunk processing
@@ -968,7 +974,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     }
 
     // Store futures for worker threads to track their completion
-    std::vector<std::future<void>> processor_futures;
+    std::vector<std::future<void> > processor_futures;
     processor_futures.reserve(num_chunks);
 
     for (size_t i = 0; i < num_chunks; ++i) {
@@ -1025,7 +1031,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         }
 
         // Capture variables for the lambda
-        int chunk_index_cap = i;
+        assert(i <= static_cast<size_t>(std::numeric_limits<int>::max()) && "Chunk index i exceeds INT_MAX!");
+        int chunk_index_cap = static_cast<int>(i);
         size_t num_chunks_cap = num_chunks;
         size_t file_size_cap = file_size;
         // Capture the base pointer of the MMF, processChunk will calculate its own offsets.
@@ -1034,8 +1041,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         size_t uniform_chunk_payload_capacity_for_lambda_cap = estimated_raw_data_payload_capacity_per_chunk;
 
         // Create copies of the strings for the lambda
-        const std::string& input_file_val_cap = input_file;
-        const std::string& output_base_val_cap = output_base;
+        const std::string &input_file_val_cap = input_file;
+        const std::string &output_base_val_cap = output_base;
 
         // image_task_queue is assumed to be the original queue variable in parseToImage's scope
         size_t effective_max_image_size_bytes;
@@ -1056,8 +1063,9 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
         // Submit the task to the processor thread pool
         auto future = processor_pool.submit(
             [chunk_index_cap, uniform_chunk_payload_capacity_for_lambda_cap, num_chunks_cap,
-             file_size_cap, base_mmf_ptr_for_lambda_cap, input_file_val_cap, output_base_val_cap,
-             &image_task_queue, tasks_pushed_to_queue_ptr = &tasks_pushed_to_queue, effective_max_image_size_bytes]() {
+                file_size_cap, base_mmf_ptr_for_lambda_cap, input_file_val_cap, output_base_val_cap,
+                &image_task_queue, tasks_pushed_to_queue_ptr = &tasks_pushed_to_queue, effective_max_image_size_bytes
+            ]() {
                 // This code runs in a worker thread
                 processChunk(
                     chunk_index_cap,
@@ -1090,7 +1098,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
 
     // Wait for all processing tasks to complete
     printMessage("Waiting for " + std::to_string(processor_futures.size()) + " worker threads to complete...");
-    for (auto& future : processor_futures) {
+    for (auto &future: processor_futures) {
         future.wait();
     }
 
@@ -1104,13 +1112,13 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     printMessage("Waiting for image writer threads to complete...");
 
     // Wait for all writer threads to complete
-    for (auto& future : writer_futures) {
+    for (auto &future: writer_futures) {
         future.wait();
     }
 
     // Mark the queue as done and clear any stalled tasks
     image_task_queue.done();
-    image_task_queue.clear();  // Clear any remaining tasks to prevent "stalled" task warnings
+    image_task_queue.clear(); // Clear any remaining tasks to prevent "stalled" task warnings
 
     // Make sure all threads have completed their work
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1123,8 +1131,8 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     resManager.printMemoryStatus();
 
     // Print shutdown messages
-    processor_pool.shutdown(true);
-    writer_pool.shutdown(true);
+    processor_pool.shutdown();
+    writer_pool.shutdown();
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
@@ -1146,7 +1154,7 @@ bool parseToImage(const std::string &input_file, const std::string &output_base,
     printSuccess("Tasks pushed to queue: " + std::to_string(tasks_pushed_to_queue.load()), true);
     printSuccess("Images created: " + std::to_string(images_saved.load()), true);
     printSuccess("======================================================", true);
-    
+
     printSuccess("File processing complete.", true);
 
     fileToMap.close();

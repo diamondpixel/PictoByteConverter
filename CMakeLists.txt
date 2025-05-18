@@ -1,8 +1,15 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.20)
 project(PictoByteConverter VERSION 1.0)
 
-# Set C++ standard to C++17 which is well-supported
-set(CMAKE_CXX_STANDARD 17)
+if (MSVC)
+    # Add AddressSanitizer flags
+    #add_compile_options("/fsanitize=address")
+    #add_link_options("/fsanitize=address")
+
+endif()
+
+# Set C++ standard to C++20 which is well-supported
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -167,3 +174,47 @@ if (BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif ()
+
+# ---- Added by Cascade: Copy ASan DLLs/PDBs from debugging_dlls directory ----
+# Define the path to your custom DLLs directory
+set(CUSTOM_DEBUGGING_DLLS_DIR ${CMAKE_SOURCE_DIR}/debugging_dlls)
+
+# Check if the custom DLLs directory exists
+if(EXISTS "${CUSTOM_DEBUGGING_DLLS_DIR}")
+    message(STATUS "Custom debugging DLLs directory found: ${CUSTOM_DEBUGGING_DLLS_DIR}")
+
+    # List of ASan runtime files to copy from your custom directory
+    # Adjust these filenames if yours are different or if some are not present
+    set(ASAN_FILES_TO_COPY)
+    foreach(base_name "clang_rt.asan_dynamic-x86_64" "clang_rt.asan_dynamic_runtime_thunk-x86_64")
+        foreach(ext ".dll" ".pdb")
+            set(current_file "${CUSTOM_DEBUGGING_DLLS_DIR}/${base_name}${ext}")
+            if(EXISTS "${current_file}")
+                list(APPEND ASAN_FILES_TO_COPY "${current_file}")
+            endif()
+        endforeach()
+    endforeach()
+
+    if(NOT ASAN_FILES_TO_COPY)
+        message(WARNING "No ASan files found in ${CUSTOM_DEBUGGING_DLLS_DIR} to copy.")
+    else()
+        # Ensure your main executable target is named PictoByteConverter
+        # If it's different, change "PictoByteConverter" below to your actual target name.
+        if(TARGET ConvertToImage)
+            add_custom_command(TARGET ConvertToImage POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E echo "Copying ASan runtime files to $<TARGET_FILE_DIR:ConvertToImage>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${ASAN_FILES_TO_COPY}
+                    $<TARGET_FILE_DIR:ConvertToImage>
+                COMMENT "Copying ASan runtime DLLs/PDBs to build directory"
+                VERBATIM
+            )
+            message(STATUS "Added post-build command to ConvertToImage to copy ASan DLLs: ${ASAN_FILES_TO_COPY}")
+        else()
+            message(WARNING "Target ConvertToImage not found. Cannot add custom command to copy ASan DLLs.")
+        endif()
+    endif()
+else()
+    message(WARNING "Custom debugging DLLs directory not found: ${CUSTOM_DEBUGGING_DLLS_DIR}. ASan DLLs will not be copied automatically from here.")
+endif()
+# ---- End of Cascade addition ----
