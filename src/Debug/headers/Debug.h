@@ -20,9 +20,6 @@
 // Global debug mode flag - atomic for thread safety
 extern PICTOBYTE_API std::atomic<bool> gDebugMode;
 
-// Mutex for synchronized console output
-extern PICTOBYTE_API std::mutex gConsoleMutex;
-
 // Color enum for Windows-compatible console coloring
 enum class ANSIColor {
     BLACK,

@@ -21,7 +21,6 @@
 #include <vector>        // For dynamic arrays to store binary data
 #include <filesystem>    // For path and file system operations
 #include <thread>        // For multi-threading support
-#include <mutex>         // For thread synchronization primitives
 #include <optional>      // For optional return values
 #include <queue>         // For queue data structure
 #include <future>        // For std::future and std::async

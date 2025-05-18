@@ -6,6 +6,7 @@
 #include <vector>
 #include <mutex>
 #include <optional>
+#include "ChunkData.h"
 
 /**
  * Extracts binary data from one or more image files.
@@ -17,7 +18,8 @@
  * @param maxThreads Maximum number of threads to use (0 for default)
  * @param maxMemoryMB Maximum memory to use in MB (0 for default)
  */
-void parseFromImage(const std::string& imageFilePath, const std::string& outputPath = "", int maxThreads = 0, int maxMemoryMB = 0);
+void parseFromImage(const std::string &imageFilePath, const std::string &outputPath = "", int maxThreads = 0,
+                    int maxMemoryMB = 0);
 
 /**
  * Get the size of the specified file in bytes
@@ -25,7 +27,7 @@ void parseFromImage(const std::string& imageFilePath, const std::string& outputP
  * @param filePath Path to the file to check
  * @return Size of the file in bytes
  */
-std::ifstream::pos_type fileSize(const char* filePath);
+std::ifstream::pos_type fileSize(const char *filePath);
 
 // Internal functions in image_parser namespace (not part of public API)
 namespace image_parser {
@@ -40,17 +42,8 @@ namespace image_parser {
         int totalChunks;
     };
 
-    /**
-    * Structure to hold file chunk information
-    */
-    struct ChunkInfo {
-        int chunkIndex = -1;
-        int totalChunks = -1;
-        size_t chunkSize = 0;
-        size_t expectedDataSize = 0;
-        std::string filename;
-        std::vector<unsigned char> payload;
-    };
+    // Using ChunkInfo from chunk_data namespace
+    using ChunkInfo = chunk_data::ChunkInfo;
 
     /**
      * Process a single image file to extract the encoded binary data
@@ -84,14 +77,32 @@ namespace image_parser {
      * Extract payload data from a single image file
      *
      * @param filename Path to the image file
-     * @param print_mutex Mutex for synchronizing console output
      * @param debug_mode Explicitly pass debug mode state to ensure thread visibility
      * @return ChunkInfo structure with the extracted payload and metadata
      */
     std::optional<ChunkInfo> extractChunkPayload(
         const std::string &filename,
-        std::mutex &print_mutex,
         bool debug_mode = false);
+
+    /**
+     * Create a full output path by combining a directory path with a filename
+     *
+     * @param outputPath Directory or full path where the file should be saved
+     * @param filename Original filename from metadata
+     * @return Complete path to use for saving the file
+     */
+    std::string createOutputPath(const std::string &outputPath, const std::string &filename);
+
+    /**
+     * Write the final assembled file from all chunks
+     *
+     * @param output_filename Output filename
+     * @param chunks Map of chunk data indexed by chunk number
+     * @return True if write was successful
+     */
+    bool writeAssembledFile(
+        const std::string &output_filename,
+        const std::map<int, ChunkInfo> &chunks);
 }
 
 #endif // PARSE_FROM_IMAGE_H

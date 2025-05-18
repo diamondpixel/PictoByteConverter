@@ -43,7 +43,7 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
  *
  * @param filename Path where the BMP file will be saved
  */
-void BitmapImage::save(const std::string &filename) {
+void BitmapImage::save(const std::string &filename) const {
     std::string temp_filename = filename + ".tmp";
 
     HANDLE hFile = CreateFile

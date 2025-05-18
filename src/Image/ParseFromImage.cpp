@@ -39,15 +39,14 @@ namespace image_parser {
      *
      * @param data Vector containing the raw image data
      * @param data_iter Iterator pointing to the beginning of the data
-     * @param print_mutex Mutex for synchronizing console output
      * @param filename Original image filename (for error messages)
      * @return Tuple containing metadata and success status
      */
     std::pair<ImageMetadata, bool> extractMetadata(
         const std::vector<unsigned char> &data,
         std::vector<unsigned char>::const_iterator &data_iter,
-        std::mutex &print_mutex,
-        const std::string &filename) {
+        const std::string &filename)
+    {
         ImageMetadata metadata;
 
         // Store the initial pointer location to rewind if needed
@@ -55,7 +54,6 @@ namespace image_parser {
 
         // Read total_header_length (3 bytes)
         if (std::distance(data_iter, data.end()) < 3) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for header length in " + filename);
             return {metadata, false};
         }
@@ -66,7 +64,6 @@ namespace image_parser {
 
         // Ensure total_header_length is exactly 48 bytes
         if (total_header_length != 48) {
-            std::lock_guard lock(print_mutex);
             printWarning("Header length is " + std::to_string(total_header_length) +
                          " bytes, expected 48 bytes in " + filename);
             // We continue anyway but this is a potential issue
@@ -74,7 +71,6 @@ namespace image_parser {
 
         // Read filename_length (2 bytes)
         if (std::distance(data_iter, data.end()) < 2) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for filename length in " + filename);
             return {metadata, false};
         }
@@ -83,7 +79,6 @@ namespace image_parser {
 
         // Read filename
         if (std::distance(data_iter, data.end()) < static_cast<long>(filename_length)) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for filename in " + filename);
             return {metadata, false};
         }
@@ -92,7 +87,6 @@ namespace image_parser {
 
         // Read data_size (10 bytes)
         if (std::distance(data_iter, data.end()) < 10) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for data size in " + filename);
             return {metadata, false};
         }
@@ -101,7 +95,6 @@ namespace image_parser {
 
         // Read current_chunk (4 bytes)
         if (std::distance(data_iter, data.end()) < 4) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for current chunk in " + filename);
             return {metadata, false};
         }
@@ -110,7 +103,6 @@ namespace image_parser {
 
         // Read total_chunks (4 bytes)
         if (std::distance(data_iter, data.end()) < 4) {
-            std::lock_guard<std::mutex> lock(print_mutex);
             printError("Not enough data for total chunks in " + filename);
             return {metadata, false};
         }
@@ -124,7 +116,6 @@ namespace image_parser {
         if (total_header_length > bytes_read) {
             size_t remaining_bytes = total_header_length - bytes_read;
             if (std::distance(data_iter, data.end()) < static_cast<long>(remaining_bytes)) {
-                std::lock_guard<std::mutex> lock(print_mutex);
                 printError("Not enough data for remaining header padding in " + filename);
                 return {metadata, false};
             }
@@ -171,12 +162,10 @@ namespace image_parser {
      * Extract payload data from a single image file
      *
      * @param filename Path to the image file
-     * @param print_mutex Mutex for synchronizing console output
      * @param debug_mode
      * @return ChunkInfo structure with the extracted payload and metadata
      */
-    std::optional<image_parser::ChunkInfo> extractChunkPayload(const std::string &filename, std::mutex &print_mutex,
-                                                               bool debug_mode) {
+    std::optional<image_parser::ChunkInfo> extractChunkPayload(const std::string &filename, bool debug_mode) {
         try {
             // IMPORTANT: Force debug mode check at thread entry point
             bool mainDebugMode = debug_mode;
@@ -201,38 +190,30 @@ namespace image_parser {
             }
 
             // Use the printMessage function which handles locking internally
-            printFilePath("Processing: " + filename);
+            printMessage("Processing: " + filename);
 
             // Start reading from the beginning of the data
             auto data_iter = data.begin();
 
             // Extract metadata from image header
-            auto [metadata, success] = extractMetadata(data, data_iter, print_mutex, filename);
+            auto [metadata, success] = extractMetadata(data, data_iter, filename);
             if (!success) {
                 return std::nullopt;
             }
 
             // Print metadata info directly here to ensure it's visible
-            std::lock_guard<std::mutex> lock(print_mutex);
-            std::cout << ANSIColorConst::CYAN << "=== Extracted metadata ===" << ANSIColorConst::RESET << std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Output file:" << ANSIColorConst::RESET << " " << metadata.
-                    outputFilename << std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Data size:" << ANSIColorConst::RESET << " "
-                    << ANSIColorConst::BRIGHT_YELLOW << metadata.expectedDataSize << ANSIColorConst::RESET << " bytes"
-                    << std::endl;
+            printMessage("=== Extracted metadata ===");
+            printMessage("  Output file: " + metadata.outputFilename);
+            printMemoryStats("  Data size: ", metadata.expectedDataSize);
 
             if (metadata.currentChunk != -1 && metadata.totalChunks != -1) {
-                std::cout << "  " << ANSIColorConst::GREEN << "Index info:" << ANSIColorConst::RESET << " " << metadata.
-                        indexInfo
-                        << " (Chunk " << ANSIColorConst::BRIGHT_YELLOW << metadata.currentChunk << ANSIColorConst::RESET
-                        << " of "
-                        << ANSIColorConst::BRIGHT_YELLOW << metadata.totalChunks << ANSIColorConst::RESET << ")" <<
-                        std::endl;
+                printMessage("  Index info: " + metadata.indexInfo + 
+                        " (Chunk " + std::to_string(metadata.currentChunk) + 
+                        " of " + std::to_string(metadata.totalChunks) + ")");
             } else if (!metadata.indexInfo.empty()) {
-                std::cout << "  " << ANSIColorConst::GREEN << "Index info:" << ANSIColorConst::RESET << " " << metadata.
-                        indexInfo << std::endl;
+                printMessage("  Index info: " + metadata.indexInfo);
             }
-            std::cout << ANSIColorConst::CYAN << "=========================" << ANSIColorConst::RESET << std::endl;
+            printMessage("=========================");
 
             // Calculate the distance from data_iter to data.end()
             size_t available_data = std::distance(data_iter, data.end());
@@ -597,8 +578,7 @@ namespace image_parser {
 
             if (files_to_process.empty()) {
                 // std::cout << Color::RED << "No sub-bmp files found for: " << tmp_base << Color::RESET << std::endl;
-                std::string tmp_base = base_filename;
-                printError("No sub-bmp files found for: " + tmp_base);
+                printError("No sub-bmp files found for: " + base_filename);
                 return files_to_process;
             }
         }
@@ -646,13 +626,12 @@ namespace image_parser {
      *
      * @param output_filename Output filename
      * @param chunks Map of chunk data indexed by chunk number
-     * @param print_mutex Mutex for synchronizing console output
      * @return True if write was successful
      */
     bool writeAssembledFile(
         const std::string &output_filename,
-        const std::map<int, image_parser::ChunkInfo> &chunks,
-        std::mutex &print_mutex) {
+        const std::map<int, image_parser::ChunkInfo> &chunks)
+    {
         if (chunks.empty()) {
             printError("No data chunks to write.");
             return false;
@@ -707,19 +686,13 @@ namespace image_parser {
             bool missing_chunks_flag = false; // Renamed to avoid conflict
 
             // Show a summary of chunk distribution at the start
-            std::cout << ANSIColorConst::CYAN << "=== Chunk distribution summary ===" << ANSIColorConst::RESET <<
-                    std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Total chunks (from metadata):" << ANSIColorConst::RESET <<
-                    " "
-                    << ANSIColorConst::BRIGHT_YELLOW << actual_total_chunks << ANSIColorConst::RESET << std::endl;
+            printMessage("=== Chunk distribution summary ===");
+            printMessage("  Total chunks (from metadata): " + std::to_string(actual_total_chunks));
             if (chunks.size() < static_cast<size_t>(actual_total_chunks)) {
-                std::cout << "  " << ANSIColorConst::RED << "Missing chunks detected:" << ANSIColorConst::RESET << " "
-                        << ANSIColorConst::BRIGHT_RED << (actual_total_chunks - chunks.size()) << ANSIColorConst::RESET
-                        << std::endl;
+                printWarning("  Missing chunks detected: " + 
+                        std::to_string(actual_total_chunks - chunks.size()));
             }
-            std::cout << ANSIColorConst::CYAN << "===============================" << ANSIColorConst::RESET <<
-                    std::endl;
-
+            printMessage("===============================");
             for (int i = 0; i < actual_total_chunks; ++i) {
                 // Loop from 0 to N-1
                 auto it = chunks.find(i); // Keys in map are expected to be 0-indexed now
@@ -743,15 +716,11 @@ namespace image_parser {
                 // Update progress more frequently - every 5 chunks or specific milestones
                 if ((i + 1) % 5 == 0 || (i + 1) == actual_total_chunks || i == 0) {
                     // Use colored output for progress updates
-                    std::cout << "  " << ANSIColorConst::GREEN << "Wrote chunk " << ANSIColorConst::RESET
-                            << ANSIColorConst::BRIGHT_YELLOW << (i + 1) << ANSIColorConst::RESET << "/"
-                            // Display as 1-based for user
-                            << ANSIColorConst::BRIGHT_YELLOW << actual_total_chunks << ANSIColorConst::RESET
-                            << " (" << ANSIColorConst::BRIGHT_YELLOW
-                            << total_bytes_written << ANSIColorConst::RESET << " bytes, "
-                            << ANSIColorConst::BRIGHT_CYAN << static_cast<int>(
-                                (static_cast<float>(i + 1) / actual_total_chunks) * 100)
-                            << "%" << ANSIColorConst::RESET << ")" << std::endl;
+                    printMessage("  Wrote chunk " + std::to_string(i + 1) + "/" +
+                            std::to_string(actual_total_chunks) + " (" + 
+                            std::to_string(total_bytes_written) + " bytes, " +
+                            std::to_string(static_cast<int>(
+                                (static_cast<float>(i + 1) / actual_total_chunks) * 100)) + "%)");
                 }
             }
 
@@ -774,23 +743,18 @@ namespace image_parser {
             }
 
             // Show final summary
-            std::cout << ANSIColorConst::CYAN << "=== Writing complete ===" << ANSIColorConst::RESET << std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Total bytes written:" << ANSIColorConst::RESET << " "
-                    << ANSIColorConst::BRIGHT_YELLOW << total_bytes_written << ANSIColorConst::RESET << std::endl;
-            std::cout << "  " << ANSIColorConst::GREEN << "Output file:" << ANSIColorConst::RESET << " "
-                    << output_filename << std::endl;
+            printMessage("=== Writing complete ===");
+            printMessage("  Total bytes written: " + std::to_string(total_bytes_written));
+            printMessage("  Output file: " + output_filename);
             if (missing_chunks_flag) {
-                std::cout << "  " << ANSIColorConst::RED << "Warning: Some chunks were missing!" <<
-                        ANSIColorConst::RESET << std::endl;
+                printWarning("  Warning: Some chunks were missing!");
             }
             if (size_mismatch) {
-                std::cout << "  " << ANSIColorConst::RED << "Warning: File size mismatch:" << ANSIColorConst::RESET <<
-                        " expected "
-                        << ANSIColorConst::BRIGHT_YELLOW << total_bytes_written << ANSIColorConst::RESET
-                        << " bytes, got " << ANSIColorConst::BRIGHT_YELLOW << actual_file_size << ANSIColorConst::RESET
-                        << " bytes" << std::endl;
+                printWarning("  Warning: File size mismatch: expected " +
+                        std::to_string(total_bytes_written) + " bytes, got " + 
+                        std::to_string(actual_file_size) + " bytes");
             }
-            std::cout << ANSIColorConst::CYAN << "======================" << ANSIColorConst::RESET << std::endl;
+            printMessage("======================");
             printCompletion("File written successfully", total_bytes_written);
 
             return !missing_chunks_flag;
@@ -818,8 +782,6 @@ namespace image_parser {
         printStatus("Processing " + std::to_string(files_to_process.size()) + " files");
 
         // Setup for single-threaded processing
-        std::mutex print_mutex;
-
         // Map to store chunks by their index for proper ordering
         std::map<int, image_parser::ChunkInfo> chunks;
         std::string output_filename;
@@ -827,11 +789,9 @@ namespace image_parser {
 
         // Extract payloads from all files
         for (const auto &file: files_to_process) {
-            auto chunk_opt = extractChunkPayload(file, print_mutex, false);
+            auto chunk_opt = extractChunkPayload(file, false);
 
             if (!chunk_opt) {
-                std::lock_guard<std::mutex> print_lock(print_mutex);
-                // std::cout << Color::RED << "Failed to extract payload from " << file << Color::RESET << std::endl;
                 printError("Failed to extract payload from " + file);
                 continue;
             }
@@ -843,14 +803,9 @@ namespace image_parser {
             if (!output_filename_set && !chunk.filename.empty()) {
                 output_filename = chunk.filename;
                 output_filename_set = true;
-                std::lock_guard<std::mutex> print_lock(print_mutex);
-                // std::cout << Color::CYAN << "Using output filename from metadata: " << output_filename << Color::RESET << std::endl;
                 printStatus("Using output filename from metadata: " + output_filename);
             } else if (!chunk.filename.empty() && output_filename != chunk.filename) {
                 // Warn about inconsistent output filenames
-                std::lock_guard<std::mutex> print_lock(print_mutex);
-                // std::cout << Color::YELLOW << "Inconsistent output filename in " << file <<
-                //   " ('" << chunk.filename << "' vs '" << output_filename << "')" << Color::RESET << std::endl;
                 printWarning("Inconsistent output filename in " + file +
                              " ('" + chunk.filename + "' vs '" + output_filename + "')");
             }
@@ -869,8 +824,7 @@ namespace image_parser {
 
         // If we have any chunks, write the assembled file
         if (!chunks.empty() && output_filename_set) {
-            std::mutex output_mutex; // Not strictly needed in single-threaded context
-            bool success = writeAssembledFile(output_filename, chunks, print_mutex);
+            bool success = writeAssembledFile(output_filename, chunks);
             if (success) {
                 // std::cout << Color::GREEN << "File successfully extracted from image!" << Color::RESET << std::endl;
                 printSuccess("File successfully extracted from image!");
@@ -934,8 +888,6 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
 
         // Print current debug status
         {
-            std::lock_guard<std::mutex> lock(gConsoleMutex);
-
             // Force set it if we detect it's off but should be on
             char *debug_env_value = nullptr;
             size_t len = 0;
@@ -1060,12 +1012,10 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
             // Use ResourceManager to run threads with proper limits
             bool thread_scheduled = resManager.runWithThread(
                 [&, file, main_thread_debug](const std::string &filepath) {
-                    // Process the image file - use gConsoleMutex instead of print_mutex
-                    auto chunk_data = image_parser::extractChunkPayload(filepath, gConsoleMutex, main_thread_debug);
+                    // Process the image file - use Debug class functions instead of mutex
+                    auto chunk_data = image_parser::extractChunkPayload(filepath, main_thread_debug);
                     if (!chunk_data) {
-                        std::lock_guard<std::mutex> failed_lock(failed_mutex);
                         failed_files.push_back(filepath);
-                        // Using printError directly handles console mutex internally
                         printError("Failed to extract payload from " + filepath);
                         return false;
                     }
@@ -1086,7 +1036,6 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
                 file);
 
             if (!thread_scheduled) {
-                // Using printWarning directly handles console mutex internally
                 printWarning("Could not schedule thread for file: " + file);
             }
 
@@ -1118,7 +1067,6 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
                          " of " + std::to_string(total_chunks));
             for (int i = 1; i <= total_chunks; ++i) {
                 if (image_chunks.find(i) == image_chunks.end()) {
-                    // std::cout << "  Missing chunk " << std::to_string(i) << std::endl;
                     printStatus("  Missing chunk " + std::to_string(i));
                 }
             }
@@ -1128,8 +1076,8 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
         std::string output_file = image_parser::createOutputPath(outputPath, target_output_file);
         printMessage("Writing output file: " + output_file);
 
-        // Write the output file - use gConsoleMutex instead of print_mutex
-        if (bool write_success = image_parser::writeAssembledFile(output_file, image_chunks, gConsoleMutex)) {
+        // Write the output file - use Debug class functions instead of mutex
+        if (bool write_success = image_parser::writeAssembledFile(output_file, image_chunks)) {
             printSuccess("File successfully extracted from image!");
         } else {
             printError("Failed to write the extracted file");
@@ -1138,5 +1086,3 @@ void parseFromImage(const std::string &filename, const std::string &outputPath, 
         printError("Error during image to file conversion: " + std::string(e.what()));
     }
 }
-
-// ... rest of the code remains the same ...

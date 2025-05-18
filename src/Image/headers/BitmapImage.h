@@ -27,7 +27,7 @@ public:
     BitmapImage(int width, int height);
     
     void setData(const std::vector<uint8_t> &data, size_t offset);
-    void save(const std::string &filename);
+    void save(const std::string &filename) const;
     ~BitmapImage() = default;
 
     bool serialize(std::ostream &os) const {
