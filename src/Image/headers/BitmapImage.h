@@ -3,9 +3,6 @@
 
 #include <vector>
 #include <string>
-#include <iostream>
-#include <fstream>
-#include <stdexcept>
 #include <cstdint>
 #include <filesystem>
 
@@ -14,63 +11,96 @@
 #define NOMINMAX
 #endif
 
-#include "../../Debug/headers/Debug.h" // For printError, printWarning
 
 /**
  * BitmapImage class
- * 
+ *
  * Represents a bitmap image with serialization/deserialization capabilities.
  */
 class BitmapImage {
 public:
-    BitmapImage() : width(0), height(0) {}
+    // Default constructor
+    BitmapImage() : width(0), height(0) {
+    }
+
+    // Constructor with dimensions
     BitmapImage(int width, int height);
-    
+
+    // Move constructor
+    BitmapImage(BitmapImage&& other) noexcept
+        : pixels(std::move(other.pixels)),
+          width(other.width),
+          height(other.height) {
+        other.width = 0;
+        other.height = 0;
+    }
+
+    // Move assignment operator
+    BitmapImage& operator=(BitmapImage&& other) noexcept {
+        if (this != &other) {
+            pixels = std::move(other.pixels);
+            width = other.width;
+            height = other.height;
+            other.width = 0;
+            other.height = 0;
+        }
+        return *this;
+    }
+
+    // Copy constructor
+    BitmapImage(const BitmapImage& other)
+        : pixels(other.pixels),
+          width(other.width),
+          height(other.height) {
+    }
+
+    // Copy assignment operator
+    BitmapImage& operator=(const BitmapImage& other) {
+        if (this != &other) {
+            pixels = other.pixels;
+            width = other.width;
+            height = other.height;
+        }
+        return *this;
+    }
+
+    // Set binary data into pixel buffer
     void setData(const std::vector<uint8_t> &data, size_t offset);
+
+    // Save image to a BMP file
     void save(const std::string &filename) const;
+
+    // Clear image data and reset dimensions
+    void clear();
+
+    // Destructor
     ~BitmapImage() = default;
 
-    bool serialize(std::ostream &os) const {
-        if (!os.good()) return false;
-        os.write(reinterpret_cast<const char *>(&width), sizeof(width));
-        os.write(reinterpret_cast<const char *>(&height), sizeof(height));
-        size_t pixels_size = pixels.size();
-        os.write(reinterpret_cast<const char *>(&pixels_size), sizeof(pixels_size));
-        if (pixels_size > 0) {
-            os.write(reinterpret_cast<const char *>(pixels.data()), pixels_size);
-        }
-        return os.good();
-    }
 
-    bool deserialize(std::istream &is) {
-        if (!is.good()) return false;
-        is.read(reinterpret_cast<char *>(&width), sizeof(width));
-        is.read(reinterpret_cast<char *>(&height), sizeof(height));
-        size_t pixels_size = 0;
-        is.read(reinterpret_cast<char *>(&pixels_size), sizeof(pixels_size));
-        if (is.fail() || pixels_size > (100 * 1024 * 1024)) { // 100MB sanity check
-            pixels.clear(); 
-            printError("BitmapImage::deserialize: Pixel size read from stream is too large or read failed. Size: " + std::to_string(pixels_size));
-            return false;
-        }
-        if (pixels_size > 0) {
-            try {
-                pixels.resize(pixels_size);
-            } catch (const std::bad_alloc &e) {
-                printError("BitmapImage::deserialize: Failed to allocate memory for pixels: " + std::string(e.what()));
-                return false;
-            }
-            is.read(reinterpret_cast<char *>(pixels.data()), pixels_size);
-        } else {
-            pixels.clear();
-        }
-        return is.good();
-    }
-
-    // Getters
+    // Backward compatibility for existing code
     [[nodiscard]] int getWidth() const { return width; }
     [[nodiscard]] int getHeight() const { return height; }
-    [[nodiscard]] const std::vector<unsigned char>& getPixels() const { return pixels; }
+    [[nodiscard]] const std::vector<unsigned char> &getPixels() const { return pixels; }
+
+    // Pixel format
+    [[nodiscard]] static int bytes_per_pixel() { return 3; } // RGB format (3 bytes per pixel)
+
+    // Pixel data access
+    [[nodiscard]] const unsigned char *get_pixel_data() const { return pixels.data(); }
+    [[nodiscard]] unsigned char *get_pixel_buffer_for_writing() { return pixels.data(); }
+
+    // Memory footprint
+    [[nodiscard]] size_t get_allocated_memory_size() const { return pixels.capacity(); }
+
+
+    // Resize the image
+    void resize(int new_width, int new_height);
+
+    // Serialization to stream
+    bool serialize(std::ostream &os) const;
+
+    // Deserialization from stream
+    bool deserialize(std::istream &is);
 
 private:
     std::vector<unsigned char> pixels;
