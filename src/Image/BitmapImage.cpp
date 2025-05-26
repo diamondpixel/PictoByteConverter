@@ -3,7 +3,12 @@
 #include <filesystem>
 #include <windows.h>
 #include <cassert>
+#include <format>
 #include <Debug/headers/Debug.h>
+#include "../Threading/headers/ResourceManager.h"
+
+// Initialize static ResourceManager reference
+ResourceManager& BitmapImage::rm_ = ResourceManager::getInstance();
 
 /**
  * @brief Constructor for the `BitmapImage` class.
@@ -14,9 +19,134 @@
  * @param height Height of the image in pixels
  */
 BitmapImage::BitmapImage(int width, int height) {
+    // Guard against excessive allocations (width/height may overflow the multiplication)
+    if (width <= 0 || height <= 0) {
+        printError("BitmapImage: invalid dimensions");
+        this->~BitmapImage();
+        return;
+    }
+
+    uint64_t total_bytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytes_per_pixel();
+    if (total_bytes > MAX_IMAGE_BYTES) {
+        printError(std::format("BitmapImage: requested {}x{} exceeds {} MB cap", width, height,
+                               MAX_IMAGE_BYTES / (1024 * 1024)));
+        this->~BitmapImage();
+        return;
+    }
+
+    // Check ResourceManager capacity before allocating
+    if (total_bytes > rm_.getMaxMemory() || rm_.getCurrentMemoryUsage() + total_bytes > rm_.getMaxMemory()) {
+        //printError("BitmapImage: allocation would exceed global memory limit; image ignored");
+        this->~BitmapImage();
+        return;
+    }
+
     this->width = width;
     this->height = height;
-    pixels.resize(width * height * bytes_per_pixel(), 0); // 3 bytes per pixel (RGB)
+    pixels.resize(static_cast<size_t>(total_bytes), 0);
+    update_memory_tracking(pixels.capacity());
+    
+    // Draw a smiley face in the middle of the image
+    draw_smiley_face();
+}
+
+/**
+ * @brief Draws a smiley face in the center of the image
+ */
+void BitmapImage::draw_smiley_face() {
+    if (width < 100 || height < 100) {
+        return; // Skip if image is too small
+    }
+    
+    const int face_radius = std::min(width, height) / 8;
+    const int center_x = width / 2;
+    const int center_y = height / 2;
+    
+    // Draw yellow circle for face
+    for (int y = center_y - face_radius; y <= center_y + face_radius; y++) {
+        for (int x = center_x - face_radius; x <= center_x + face_radius; x++) {
+            // Skip if out of bounds
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            // Calculate distance from center
+            int dx = x - center_x;
+            int dy = y - center_y;
+            int distance_squared = dx * dx + dy * dy;
+            
+            // If inside the circle, color it yellow
+            if (distance_squared <= face_radius * face_radius) {
+                int pixel_index = (y * width + x) * bytes_per_pixel();
+                pixels[pixel_index] = 255;     // R
+                pixels[pixel_index + 1] = 255; // G
+                pixels[pixel_index + 2] = 0;   // B
+            }
+        }
+    }
+    
+    // Draw eyes (black circles)
+    const int eye_radius = face_radius / 5;
+    const int eye_offset_x = face_radius / 2;
+    const int eye_offset_y = face_radius / 3;
+    
+    // Left eye
+    for (int y = center_y - eye_offset_y - eye_radius; y <= center_y - eye_offset_y + eye_radius; y++) {
+        for (int x = center_x - eye_offset_x - eye_radius; x <= center_x - eye_offset_x + eye_radius; x++) {
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            int dx = x - (center_x - eye_offset_x);
+            int dy = y - (center_y - eye_offset_y);
+            int distance_squared = dx * dx + dy * dy;
+            
+            if (distance_squared <= eye_radius * eye_radius) {
+                int pixel_index = (y * width + x) * bytes_per_pixel();
+                pixels[pixel_index] = 0;     // R
+                pixels[pixel_index + 1] = 0; // G
+                pixels[pixel_index + 2] = 0; // B
+            }
+        }
+    }
+    
+    // Right eye
+    for (int y = center_y - eye_offset_y - eye_radius; y <= center_y - eye_offset_y + eye_radius; y++) {
+        for (int x = center_x + eye_offset_x - eye_radius; x <= center_x + eye_offset_x + eye_radius; x++) {
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            int dx = x - (center_x + eye_offset_x);
+            int dy = y - (center_y - eye_offset_y);
+            int distance_squared = dx * dx + dy * dy;
+            
+            if (distance_squared <= eye_radius * eye_radius) {
+                int pixel_index = (y * width + x) * bytes_per_pixel();
+                pixels[pixel_index] = 0;     // R
+                pixels[pixel_index + 1] = 0; // G
+                pixels[pixel_index + 2] = 0; // B
+            }
+        }
+    }
+    
+    // Draw smile (semicircle)
+    const int smile_radius = face_radius / 2;
+    const int smile_offset_y = face_radius / 4;
+    
+    for (int y = center_y + smile_offset_y; y <= center_y + smile_offset_y + smile_radius; y++) {
+        for (int x = center_x - smile_radius; x <= center_x + smile_radius; x++) {
+            if (x < 0 || x >= width || y < 0 || y >= height) continue;
+            
+            int dx = x - center_x;
+            int dy = y - (center_y + smile_offset_y);
+            int distance_squared = dx * dx + dy * dy;
+            
+            // Draw only the bottom half of the circle (smile)
+            if (distance_squared <= smile_radius * smile_radius && 
+                distance_squared >= (smile_radius - 2) * (smile_radius - 2) && 
+                dy > 0) {
+                int pixel_index = (y * width + x) * bytes_per_pixel();
+                pixels[pixel_index] = 0;     // R
+                pixels[pixel_index + 1] = 0; // G
+                pixels[pixel_index + 2] = 0; // B
+            }
+        }
+    }
 }
 
 /**
@@ -34,6 +164,7 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
     // Copy the data into the pixel buffer
     std::copy_n(data.begin(), static_cast<std::ptrdiff_t>(bytesToCopy), pixels.begin() + offset);
 }
+
 /**
  * @brief Clears the image data and resets dimensions.
  *
@@ -42,6 +173,7 @@ void BitmapImage::setData(const std::vector<uint8_t> &data, size_t offset) {
 void BitmapImage::clear() {
     pixels.clear();
     pixels.shrink_to_fit(); // Attempt to release memory
+    update_memory_tracking(0);
     width = 0;
     height = 0;
 }
@@ -54,14 +186,21 @@ void BitmapImage::clear() {
  */
 void BitmapImage::resize(int new_width, int new_height) {
     if (new_width <= 0 || new_height <= 0) {
-        printWarning("BitmapImage::resize: Invalid dimensions, clearing image");
+        printError("BitmapImage::resize: Invalid dimensions, clearing image");
         clear();
+        return;
+    }
+
+    size_t new_total = static_cast<size_t>(new_width) * static_cast<size_t>(new_height) * bytes_per_pixel();
+    if (new_total > rm_.getMaxMemory() || rm_.getCurrentMemoryUsage() - tracked_bytes_ + new_total > rm_.getMaxMemory()) {
+        printError("BitmapImage::resize: would exceed memory limit; resize aborted");
         return;
     }
 
     width = new_width;
     height = new_height;
-    pixels.resize(width * height * bytes_per_pixel(), 0);
+    pixels.resize(new_total, 0);
+    update_memory_tracking(pixels.capacity());
 }
 
 /**
@@ -72,7 +211,7 @@ void BitmapImage::resize(int new_width, int new_height) {
  *
  * @param filename Path where the BMP file will be saved
  */
-void BitmapImage::save(const std::string &filename) const {
+bool BitmapImage::save(const std::string &filename) const {
     std::string temp_filename = filename + ".tmp";
 
     HANDLE hFile = CreateFile
@@ -90,7 +229,7 @@ void BitmapImage::save(const std::string &filename) const {
         printError(
             "Failed to open temporary file for writing: " + temp_filename + ". Error: " +
             std::to_string(GetLastError()));
-        return;
+        return false;
     }
 
     // BMP Headers
@@ -161,11 +300,13 @@ void BitmapImage::save(const std::string &filename) const {
                 std::filesystem::remove(temp_filename);
             }
         } catch (const std::filesystem::filesystem_error &e_remove) {
-            printWarning(
+            printError(
                 "BitmapImage::save: Failed to remove temp file after rename error: " + temp_filename + ". Error: " +
                 e_remove.what());
+            return false;
         }
     }
+    return true;
 }
 
 /**
@@ -177,78 +318,38 @@ void BitmapImage::save(const std::string &filename) const {
  * @return True if serialization succeeded, false otherwise
  */
 bool BitmapImage::serialize(std::ostream &os) const {
-    if (!os.good()) return false;
-
-    // Use a buffer to reduce the number of write operations
-    constexpr size_t BUFFER_SIZE = 4096;
-    char buffer[BUFFER_SIZE];
-    size_t buffer_pos = 0;
-
-    // Helper to write to buffer and flush when needed
-    auto write_to_buffer = [&](const void *data, size_t size) {
-        // If data doesn't fit in buffer, flush buffer first
-        if (buffer_pos + size > BUFFER_SIZE) {
-            os.write(buffer, static_cast<std::streamsize>(buffer_pos));
-            if (!os.good()) return false;
-            buffer_pos = 0;
-        }
-
-        // If data is larger than buffer, write directly to stream
-        if (size > BUFFER_SIZE) {
-            if (buffer_pos > 0) {
-                os.write(buffer, static_cast<std::streamsize>(buffer_pos));
-                if (!os.good()) return false;
-                buffer_pos = 0;
-            }
-            os.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
-            return os.good();
-        }
-
-        // Otherwise copy to buffer
-        std::memcpy(buffer + buffer_pos, data, size);
-        buffer_pos += size;
-        return true;
-    };
-
-    // Helper to flush buffer
-    auto flush_buffer = [&]() {
-        if (buffer_pos > 0) {
-            os.write(buffer, static_cast<std::streamsize>(buffer_pos));
-            buffer_pos = 0;
-            return os.good();
-        }
-        return true;
-    };
-
-    // Write dimensions
-    if (!write_to_buffer(&width, sizeof(width)) ||
-        !write_to_buffer(&height, sizeof(height))) {
+    if (!os.good()) {
+        std::cerr << "[ERROR] BitmapImage::serialize: Stream not good at entry." << std::endl;
         return false;
     }
 
-    // Write pixel data size
-    const size_t pixels_size = pixels.size();
-    if (!write_to_buffer(&pixels_size, sizeof(pixels_size))) {
+    os.write(reinterpret_cast<const char *>(&width), sizeof(width));
+    if (!os.good()) {
+        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing width." << std::endl;
         return false;
     }
 
-    // Write pixel data - directly to stream if large
-    if (pixels_size > 0) {
-        if (pixels_size > BUFFER_SIZE - buffer_pos) {
-            // Flush buffer and write pixels directly
-            if (!flush_buffer()) return false;
-            os.write(reinterpret_cast<const char *>(pixels.data()),
-                     static_cast<std::streamsize>(pixels_size));
-        } else {
-            // Write to buffer
-            if (!write_to_buffer(pixels.data(), pixels_size)) {
-                return false;
-            }
-        }
+    os.write(reinterpret_cast<const char *>(&height), sizeof(height));
+    if (!os.good()) {
+        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing height." << std::endl;
+        return false;
     }
 
-    // Final flush
-    return flush_buffer();
+    size_t pixel_data_size = pixels.size();
+    os.write(reinterpret_cast<const char *>(&pixel_data_size), sizeof(pixel_data_size));
+    if (!os.good()) {
+        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing pixel_data_size." << std::endl;
+        return false;
+    }
+
+    if (pixel_data_size > 0) {
+        os.write(reinterpret_cast<const char *>(pixels.data()), pixel_data_size);
+        if (!os.good()) {
+            std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing pixels." << std::endl;
+            return false;
+        }
+    }
+    return os.good();
 }
 
 /**
@@ -302,10 +403,10 @@ bool BitmapImage::deserialize(std::istream &is) {
 
     // Validate pixel data size against dimensions
     if (pixels_size > 0 && pixels_size != expected_size) {
-        printWarning("BitmapImage::deserialize: Pixel data size (" +
-                     std::to_string(pixels_size) + ") doesn't match expected size (" +
-                     std::to_string(expected_size) + ") for dimensions " +
-                     std::to_string(new_width) + "x" + std::to_string(new_height));
+        printError("BitmapImage::deserialize: Pixel data size (" +
+                   std::to_string(pixels_size) + ") doesn't match expected size (" +
+                   std::to_string(expected_size) + ") for dimensions " +
+                   std::to_string(new_width) + "x" + std::to_string(new_height));
     }
 
     // Read pixel data
@@ -320,10 +421,10 @@ bool BitmapImage::deserialize(std::istream &is) {
             height = new_height;
 
             // Read data in chunks for better performance with large images
-            constexpr size_t CHUNK_SIZE = 8192;
             size_t bytes_read = 0;
 
             while (bytes_read < pixels_size && is.good()) {
+                constexpr size_t CHUNK_SIZE = 8192;
                 const size_t bytes_to_read = std::min(CHUNK_SIZE, pixels_size - bytes_read);
                 is.read(reinterpret_cast<char *>(pixels.data() + bytes_read),
                         static_cast<std::streamsize>(bytes_to_read));
@@ -352,4 +453,37 @@ bool BitmapImage::deserialize(std::istream &is) {
         height = 0;
     }
     return is.good();
+}
+
+/**
+ * @brief Returns the memory usage of the bitmap image.
+ *
+ * Calculates the total memory used by the image, including pixel data and metadata.
+ *
+ * @return Size in
+ */
+size_t BitmapImage::getMemoryUsage() const {
+    // Calculate the memory used by the pixel data - this is the dominant factor
+    // For a 5000x5000 RGB image, this would be 5000*5000*3 = 75,000,000 bytes
+    size_t pixel_memory = static_cast<size_t>(width) * static_cast<size_t>(height) * bytes_per_pixel();
+
+    // Add memory for the vector's capacity (which might be larger than width*height*3)
+    if (pixels.capacity() > pixel_memory) {
+        pixel_memory = pixels.capacity();
+    }
+
+    // Add memory for the class members (width, height, etc.)
+    size_t metadata_memory = sizeof(BitmapImage);
+
+    return pixel_memory + metadata_memory;
+}
+
+// Helper to adjust ResourceManager accounting
+void BitmapImage::update_memory_tracking(size_t new_capacity_bytes) {
+    if (new_capacity_bytes > tracked_bytes_) {
+        rm_.increaseMemory(new_capacity_bytes - tracked_bytes_);
+    } else if (new_capacity_bytes < tracked_bytes_) {
+        rm_.decreaseMemory(tracked_bytes_ - new_capacity_bytes);
+    }
+    tracked_bytes_ = new_capacity_bytes;
 }

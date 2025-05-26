@@ -8,6 +8,7 @@
 #include <memory>
 #include <atomic>
 #include <optional>
+#include "../../Threading/headers/ResourceManager.h" // Include for MemoryBlockId
 
 // Forward declaration for ResourceManager
 class ResourceManager;
@@ -164,11 +165,16 @@ private:
     
     // Thread synchronization
     mutable std::mutex mutex_;
+    mutable std::mutex memoryBlocksMutex_; // For thread-safe access to messageMemoryBlocks_
     
     // Memory tracking
     std::string resourceTag_;
     std::atomic<size_t> totalTrackedMemory_{0}; // Total memory reported to ResourceManager
     std::atomic<std::ptrdiff_t> pendingMessageMemoryDelta_{0}; // Accumulates message memory changes
+    
+    // Pooled memory blocks
+    ResourceManager::MemoryBlockId structuralMemoryBlock_; // Block for structural memory
+    std::vector<ResourceManager::MemoryBlockId> messageMemoryBlocks_; // Blocks for message memory
 
     static constexpr size_t MESSAGE_MEMORY_FLUSH_THRESHOLD = 4096; // 4KB threshold
     

@@ -4,7 +4,6 @@
 #include <string>
 #include <mutex>
 #include <type_traits>
-#include <concepts>
 #include "../../Tasks/headers/_Task.h"
 
 /**
@@ -13,12 +12,9 @@
  * This template defines the common interface that all queue implementations
  * should support. It provides a consistent API for different queue types.
  *
- * @tparam T Type of items in the queue, must be derived from Task
+ * @tparam T Type of items in the queue
  */
 template<typename T>
-concept TaskDerived = std::derived_from<T, Task>;
-
-template<TaskDerived T>
 struct QueueBase {
     /**
      * @brief Push an item to the queue

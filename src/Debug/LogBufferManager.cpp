@@ -1,8 +1,8 @@
 #include "headers/LogBufferManager.h"
-#include "../../Threading/headers/ThreadPool.h" // Added for std::unique_ptr<ThreadPool> and its methods
 #include <stdexcept>
 #include <format> // Added for C++20 std::format
 #include <atomic> // Added for std::atomic<bool>
+#include <Threading/headers/ThreadPool.h>
 
 namespace debug {
 
@@ -194,8 +194,7 @@ void LogBufferManager::initializeThreadPool(size_t numThreads) {
 }
 
 void LogBufferManager::shutdown() {
-    bool already_shutting_down = shutting_down_.exchange(true, std::memory_order_acq_rel);
-    if (already_shutting_down) {
+    if (bool already_shutting_down = shutting_down_.exchange(true, std::memory_order_acq_rel)) {
         return; // Shutdown already in progress or completed
     }
 

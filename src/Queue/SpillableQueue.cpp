@@ -17,6 +17,5 @@ using RM = ResourceManager;
 // Implementation of SpillableQueue methods
 #include "inlines/SpillableQueue.inl"
 
-// Explicit template instantiations
-template class SpillableQueue<ImageTaskInternal>;
-template class SpillableQueue<Task>;
+// Explicit template instantiation for pointer-based tasks, if needed
+template class SpillableQueue<std::unique_ptr<Task>>;

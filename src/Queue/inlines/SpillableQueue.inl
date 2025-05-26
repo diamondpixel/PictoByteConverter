@@ -8,6 +8,8 @@
 #include <functional>
 #include <deque>
 #include <utility>
+#include <memory>
+#include <queue>
 #include "../../Debug/headers/LogBufferManager.h"
 #include "../../Threading/headers/ResourceManager.h"
 
@@ -84,7 +86,7 @@ SpillableQueue<T>::SpillableQueue(SpillableQueue<T> &&other) noexcept
     spilled_task_files_ = std::move(other.spilled_task_files_);
 
     // Reset other to a valid but empty state
-    other.queue_ = std::queue<ResourceManager::MemoryBlockId>();
+    other.queue_ = std::queue<T>();
     other.spilled_task_files_ = std::queue<std::string>();
     other.shutdown_flag_.store(false);
     other.enable_spilling_.store(true);
@@ -101,17 +103,12 @@ SpillableQueue<T> &SpillableQueue<T>::operator=(SpillableQueue<T> &&other) noexc
         std::lock_guard<std::mutex> lock_other(other.mutex_, std::adopt_lock);
 
         // Clean up current resources
-        RM &rm = RM::getInstance();
         while (!queue_.empty()) {
-            auto block_id = queue_.front();
+            auto item = std::move(queue_.front());
             queue_.pop();
 
-            void *mem = rm.getMemoryPtr(block_id);
-            if (mem) {
-                T *task_ptr = static_cast<T *>(mem);
-                task_ptr->~T();
-                rm.releasePooledMemory(block_id);
-            }
+            // Destroy the task
+            item.reset();
         }
 
         // Clean up spill files
@@ -136,7 +133,7 @@ SpillableQueue<T> &SpillableQueue<T>::operator=(SpillableQueue<T> &&other) noexc
         enable_spilling_.store(other.enable_spilling_.load());
 
         // Reset other to a valid but empty state
-        other.queue_ = std::queue<ResourceManager::MemoryBlockId>();
+        other.queue_ = std::queue<T>();
         other.spilled_task_files_ = std::queue<std::string>();
         other.shutdown_flag_.store(false);
         other.enable_spilling_.store(true);
@@ -148,19 +145,49 @@ SpillableQueue<T> &SpillableQueue<T>::operator=(SpillableQueue<T> &&other) noexc
 
 template<typename T>
 bool SpillableQueue<T>::push(T &&item) {
-    RM &rm = RM::getInstance();
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (shutdown_flag_) return false;
 
-    // Calculate the memory usage of this item
-    size_t item_memory_usage = sizeof(T);
-    if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-        item_memory_usage += item.getMemoryUsage();
+    // Calculate memory usage (pointer-aware)
+    size_t item_memory_usage = 0;
+    if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+        item_memory_usage = item ? item->getMemoryUsage() : 0;
+    } else {
+        item_memory_usage = sizeof(T);
+        if constexpr (requires(T t) { t.getMemoryUsage(); }) {
+            item_memory_usage += item.getMemoryUsage();
+        }
     }
 
-    // Check if adding this item would exceed our memory limit
-    if (current_queue_memory_usage_ + item_memory_usage + rm.getCurrentMemoryUsage() > rm.getMaxMemory() &&
+    // Debug log actual item size and memory state
+    debug::LogBufferManager::getInstance().appendTo(
+        "SpillableQueue",
+        "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
+            " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
+            " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
+        debug::LogContext::Debug);
+
+    // Console debug output as well for immediate visibility
+    std::cout << "[DEBUG][SpillableQueue] '" << queue_name_ << "' push: item_size=" << item_memory_usage
+              << " bytes, RM current=" << RM::getInstance().getCurrentMemoryUsage()
+              << " bytes, RM max=" << RM::getInstance().getMaxMemory() << " bytes" << std::endl;
+
+    // Reject if single item exceeds global max memory (can't ever fit)
+    if (item_memory_usage > RM::getInstance().getMaxMemory()) {
+        debug::LogBufferManager::getInstance().appendTo(
+            "SpillableQueue",
+            "Task rejected: memory " + std::to_string(item_memory_usage) + " > max " +
+                std::to_string(RM::getInstance().getMaxMemory()),
+            debug::LogContext::Warning);
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            if (item) item.reset();
+        }
+        return false;
+    }
+
+    // Check global memory usage; spill if limit exceeded
+    if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         !spill_directory_path_.empty() && enable_spilling_) {
         std::ostringstream filename_ss;
         filename_ss << spill_directory_path_ << "/task_" << spill_file_id_counter_++ << ".dat";
@@ -178,8 +205,20 @@ bool SpillableQueue<T>::push(T &&item) {
             return false;
         }
 
-        // Only try to serialize if T has a serialize method
-        if constexpr (requires(T t, std::ofstream &f) { t.serialize(f); }) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            // Serialize through unique_ptr
+            if (item && item->serialize(file)) {
+                // after serializing, free memory tracked by ResourceManager inside task destructor
+                file.flush();
+                if (file.good()) {
+                    // free heavy buffers but keep task object & promise alive
+                    item->releaseHeavyResources();
+                    spilled_task_files_.push(spill_filename);
+                    cv_.notify_one();
+                    return true;
+                }
+            }
+        } else if constexpr (requires(T t, std::ofstream &f) { t.serialize(f); }) {
             if (item.serialize(file)) {
                 file.flush(); // Explicitly flush before checking good() and closing
                 if (file.good()) {
@@ -188,56 +227,21 @@ bool SpillableQueue<T>::push(T &&item) {
                     spilled_task_files_.push(spill_filename);
                     cv_.notify_one();
                     return true;
-                } else {
-                    debug::LogBufferManager::getInstance().appendTo(
-                        "SpillableQueue",
-                        "Stream error after serializing/flushing to spill file: " + spill_filename + " for queue: " +
-                        queue_name_,
-                        debug::LogContext::Error);
-                    file.close(); // Close stream before removing file
-                    try {
-                        if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
-                    } catch (...) {
-                        /* ignore cleanup error */
-                    }
-                    return false;
                 }
-            } else {
-                // item.serialize(file) returned false
-                debug::LogBufferManager::getInstance().appendTo(
-                    "SpillableQueue",
-                    "Serialization to spill file failed: " + spill_filename + " for queue: " + queue_name_,
-                    debug::LogContext::Error);
-                file.close(); // Close stream before removing file
-                try {
-                    if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
-                } catch (...) {
-                    /* ignore cleanup error */
-                }
-                return false;
             }
-        } else {
-            // If T doesn't have serialize, we can't spill to disk
-            debug::LogBufferManager::getInstance().appendTo(
-                "SpillableQueue",
-                "Cannot spill item for queue '" + queue_name_ + "': Type does not support serialize().",
-                debug::LogContext::Warning);
-            file.close(); // Close the empty file that was opened
-            try { if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename); } catch (...) {
-                /* ignore cleanup error */
-            }
-            return false;
         }
+
+        file.close(); // Close stream before removing file
+        try {
+            if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
+        } catch (...) {
+            /* ignore cleanup error */
+        }
+        return false;
     }
 
-    auto block_id = rm.getPooledMemory(sizeof(T), RM::MemoryBlockCategory::BUFFER);
-    if (!block_id.isValid()) return false;
-
-    void *mem = rm.getMemoryPtr(block_id);
-    new(mem) T(std::move(item));
-
-    // Push just the memory block ID to the queue
-    queue_.push(block_id);
+    // No spill; keep in-memory
+    queue_.push(std::move(item));
     current_queue_memory_usage_ += item_memory_usage;
     cv_.notify_one();
     return true;
@@ -245,23 +249,51 @@ bool SpillableQueue<T>::push(T &&item) {
 
 template<typename T>
 bool SpillableQueue<T>::try_push(T &&item) {
-    RM &rm = RM::getInstance();
     std::lock_guard<std::mutex> lock(mutex_);
-
 
     // Don't push if shutting down
     if (shutdown_flag_) return false;
 
-    // Calculate the memory usage of this item
-    size_t item_memory_usage = sizeof(T);
-    if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-        item_memory_usage += item.getMemoryUsage();
+    // Calculate memory usage (pointer-aware)
+    size_t item_memory_usage = 0;
+    if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+        item_memory_usage = item ? item->getMemoryUsage() : 0;
+    } else {
+        item_memory_usage = sizeof(T);
+        if constexpr (requires(T t) { t.getMemoryUsage(); }) {
+            item_memory_usage += item.getMemoryUsage();
+        }
     }
 
-    // Check if adding this item would exceed our memory limit
-    if (current_queue_memory_usage_ + item_memory_usage + rm.getCurrentMemoryUsage() > rm.getMaxMemory() &&
+    // Debug log actual item size and memory state
+    debug::LogBufferManager::getInstance().appendTo(
+        "SpillableQueue",
+        "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
+            " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
+            " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
+        debug::LogContext::Debug);
+
+    // Console debug output
+    std::cout << "[DEBUG][SpillableQueue] '" << queue_name_ << "' try_push: item_size=" << item_memory_usage
+              << " bytes, RM current=" << RM::getInstance().getCurrentMemoryUsage()
+              << " bytes, RM max=" << RM::getInstance().getMaxMemory() << " bytes" << std::endl;
+
+    // Reject if single item exceeds global max memory (can't ever fit)
+    if (item_memory_usage > RM::getInstance().getMaxMemory()) {
+        debug::LogBufferManager::getInstance().appendTo(
+            "SpillableQueue",
+            "Task rejected: memory " + std::to_string(item_memory_usage) + " > max " +
+                std::to_string(RM::getInstance().getMaxMemory()),
+            debug::LogContext::Warning);
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            if (item) item.reset();
+        }
+        return false;
+    }
+
+    // Check global memory usage; spill if limit exceeded
+    if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         !spill_directory_path_.empty() && enable_spilling_) {
-        // Spill to disk
         std::ostringstream filename_ss;
         filename_ss << spill_directory_path_ << "/task_" << spill_file_id_counter_++ << ".dat";
         std::string spill_filename = filename_ss.str();
@@ -278,8 +310,20 @@ bool SpillableQueue<T>::try_push(T &&item) {
             return false;
         }
 
-        // Only try to serialize if T has a serialize method
-        if constexpr (requires(T t, std::ofstream &f) { t.serialize(f); }) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            // Serialize through unique_ptr
+            if (item && item->serialize(file)) {
+                // after serializing, free memory tracked by ResourceManager inside task destructor
+                file.flush();
+                if (file.good()) {
+                    // free heavy buffers but keep task object & promise alive
+                    item->releaseHeavyResources();
+                    spilled_task_files_.push(spill_filename);
+                    cv_.notify_one();
+                    return true;
+                }
+            }
+        } else if constexpr (requires(T t, std::ofstream &f) { t.serialize(f); }) {
             if (item.serialize(file)) {
                 file.flush(); // Explicitly flush before checking good() and closing
                 if (file.good()) {
@@ -288,56 +332,21 @@ bool SpillableQueue<T>::try_push(T &&item) {
                     spilled_task_files_.push(spill_filename);
                     cv_.notify_one();
                     return true;
-                } else {
-                    debug::LogBufferManager::getInstance().appendTo(
-                        "SpillableQueue",
-                        "Stream error after serializing/flushing to spill file: " + spill_filename + " for queue: " +
-                        queue_name_,
-                        debug::LogContext::Error);
-                    file.close(); // Close stream before removing file
-                    try {
-                        if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
-                    } catch (...) {
-                        /* ignore cleanup error */
-                    }
-                    return false;
                 }
-            } else {
-                // item.serialize(file) returned false
-                debug::LogBufferManager::getInstance().appendTo(
-                    "SpillableQueue",
-                    "Serialization to spill file failed: " + spill_filename + " for queue: " + queue_name_,
-                    debug::LogContext::Error);
-                file.close(); // Close stream before removing file
-                try {
-                    if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
-                } catch (...) {
-                    /* ignore cleanup error */
-                }
-                return false;
             }
-        } else {
-            // If T doesn't have serialize, we can't spill to disk
-            debug::LogBufferManager::getInstance().appendTo(
-                "SpillableQueue",
-                "Cannot spill item for queue '" + queue_name_ + "': Type does not support serialize().",
-                debug::LogContext::Warning);
-            file.close(); // Close the empty file that was opened
-            try { if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename); } catch (...) {
-                /* ignore cleanup error */
-            }
-            return false;
         }
+
+        file.close(); // Close stream before removing file
+        try {
+            if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
+        } catch (...) {
+            /* ignore cleanup error */
+        }
+        return false;
     }
 
-    auto block_id = rm.getPooledMemory(sizeof(T), RM::MemoryBlockCategory::BUFFER);
-    if (!block_id.isValid()) return false;
-
-    void *mem = rm.getMemoryPtr(block_id);
-    new(mem) T(std::move(item));
-
-    // Push just the memory block ID to the queue
-    queue_.push(block_id);
+    // No spill; keep in-memory
+    queue_.push(std::move(item));
     current_queue_memory_usage_ += item_memory_usage;
     cv_.notify_one();
     return true;
@@ -356,30 +365,27 @@ bool SpillableQueue<T>::pop(T &item) {
         return false; // Queue is empty and shutting down
     }
 
-    RM &rm = RM::getInstance();
-
     if (!queue_.empty()) {
-        auto block_id = queue_.front();
+        auto task_ptr = std::move(queue_.front());
         queue_.pop();
 
-        void *mem = rm.getMemoryPtr(block_id);
-        T *task_ptr = static_cast<T *>(mem);
-
-        // Calculate memory usage of this item
-        size_t item_memory_usage = sizeof(T);
-        if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-            item_memory_usage += task_ptr->getMemoryUsage();
-        }
-
         // Copy the task to the output parameter
-        item = std::move(*task_ptr);
+        item = std::move(task_ptr);
 
-        // Destroy the task and release memory
-        task_ptr->~T();
-        rm.releasePooledMemory(block_id);
+        // Destroy the task
+        task_ptr.reset(); // unique_ptr destructor
 
         // Update memory usage
-        current_queue_memory_usage_ -= item_memory_usage;
+        size_t item_mem_usage = 0;
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            item_mem_usage = item ? item->getMemoryUsage() : 0;
+        } else {
+            item_mem_usage = sizeof(T);
+            if constexpr (requires(T t) { t.getMemoryUsage(); }) {
+                item_mem_usage += item.getMemoryUsage();
+            }
+        }
+        current_queue_memory_usage_ -= item_mem_usage;
         return true;
     }
 
@@ -393,7 +399,11 @@ bool SpillableQueue<T>::pop(T &item) {
         std::ifstream file(filename, std::ios::binary);
 
         bool success = false;
-        if constexpr (requires(T t, std::ifstream &f) { t.deserialize(f); }) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            auto new_task = std::make_unique<typename T::element_type>();
+            success = file && new_task->deserialize(file);
+            if (success) item = std::move(new_task);
+        } else if constexpr (requires(T t, std::ifstream &f) { t.deserialize(f); }) {
             success = file && item.deserialize(file);
         }
         file.close();
@@ -418,30 +428,27 @@ bool SpillableQueue<T>::try_pop(T &item) {
         return false; // Queue is empty
     }
 
-    RM &rm = RM::getInstance();
-
     if (!queue_.empty()) {
-        auto block_id = queue_.front();
+        auto task_ptr = std::move(queue_.front());
         queue_.pop();
 
-        void *mem = rm.getMemoryPtr(block_id);
-        T *task_ptr = static_cast<T *>(mem);
-
-        // Calculate memory usage of this item
-        size_t item_memory_usage = sizeof(T);
-        if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-            item_memory_usage += task_ptr->getMemoryUsage();
-        }
-
         // Copy the task to the output parameter
-        item = std::move(*task_ptr);
+        item = std::move(task_ptr);
 
-        // Destroy the task and release memory
-        task_ptr->~T();
-        rm.releasePooledMemory(block_id);
+        // Destroy the task
+        task_ptr.reset(); // unique_ptr destructor
 
         // Update memory usage
-        current_queue_memory_usage_ -= item_memory_usage;
+        size_t item_mem_usage2 = 0;
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            item_mem_usage2 = item ? item->getMemoryUsage() : 0;
+        } else {
+            item_mem_usage2 = sizeof(T);
+            if constexpr (requires(T t) { t.getMemoryUsage(); }) {
+                item_mem_usage2 += item.getMemoryUsage();
+            }
+        }
+        current_queue_memory_usage_ -= item_mem_usage2;
         return true;
     }
 
@@ -455,7 +462,11 @@ bool SpillableQueue<T>::try_pop(T &item) {
         std::ifstream file(filename, std::ios::binary);
 
         bool success = false;
-        if constexpr (requires(T t, std::ifstream &f) { t.deserialize(f); }) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            auto new_task = std::make_unique<typename T::element_type>();
+            success = file && new_task->deserialize(file);
+            if (success) item = std::move(new_task);
+        } else if constexpr (requires(T t, std::ifstream &f) { t.deserialize(f); }) {
             success = file && item.deserialize(file);
         }
         file.close();
@@ -535,27 +546,8 @@ size_t SpillableQueue<T>::getMemoryUsage() const {
     // Add memory for the spill directory path string
     memory_usage += spill_directory_path_.capacity() * sizeof(char);
 
-    // Add memory for in-memory items
-    RM &rm = RM::getInstance();
-    auto temp_queue = queue_;
-    while (!temp_queue.empty()) {
-        const auto &block_id = temp_queue.front();
-        // Add memory for the block ID itself
-        memory_usage += sizeof(ResourceManager::MemoryBlockId);
-
-        // Add memory for the actual task
-        void *mem = rm.getMemoryPtr(block_id);
-        if (mem) {
-            T *task_ptr = static_cast<T *>(mem);
-            memory_usage += sizeof(T);
-
-            // If the task has its own getMemoryUsage method, use it
-            if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-                memory_usage += task_ptr->getMemoryUsage();
-            }
-        }
-        temp_queue.pop();
-    }
+    // Add current tracked memory of items (maintained by push/pop)
+    memory_usage += current_queue_memory_usage_;
 
     return memory_usage;
 }

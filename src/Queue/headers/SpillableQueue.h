@@ -7,6 +7,8 @@
 #include <string>
 #include <atomic>
 #include <utility> // For std::pair
+#include <memory> // For std::unique_ptr
+ #include <type_traits>
 #include "QueueBase.h"
 #include "../../Threading/headers/ResourceManager.h"
 
@@ -28,6 +30,7 @@
  */
 template<typename T>
 class SpillableQueue : public QueueBase<T>{
+    static_assert(std::is_same_v<T, std::unique_ptr<Task>>, "SpillableQueue must be instantiated with std::unique_ptr<Task>");
 public:
     /**
      * @brief Construct a new SpillableQueue
@@ -156,9 +159,8 @@ public:
     const std::string &name() const override;
 
 private:
-    // Store only the memory block ID in the queue
-    // The actual item is stored in memory pointed to by the block ID
-    std::queue<ResourceManager::MemoryBlockId> queue_;
+    // Pointer-based queue stores the template type directly (T can be std::unique_ptr<Task>)
+    std::queue<T> queue_;
     std::queue<std::string> spilled_task_files_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;

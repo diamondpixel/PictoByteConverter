@@ -224,15 +224,28 @@ size_t ThreadSafeQueue<T>::getMemoryUsage() const {
     // Base memory usage for the queue structure
     size_t usage = sizeof(*this);
     
-    // Add memory usage for each item in the queue
-    std::queue<T> queue_copy = queue_;
-    while (!queue_copy.empty()) {
-        if constexpr (std::is_same_v<T, Task> || std::is_same_v<T, ImageTaskInternal>) {
-            usage += queue_copy.front().getMemoryUsage();
-        } else {
-            usage += sizeof(T);
+    // Estimate memory usage for items without copying the queue
+    if constexpr (std::is_same_v<T, std::unique_ptr<Task>>) {
+        // Each unique_ptr itself occupies sizeof(T); actual Task* memory is accounted elsewhere
+        usage += size_.load() * sizeof(T);
+    } else if constexpr (std::is_same_v<T, Task> || std::is_same_v<T, ImageTaskInternal>) {
+        // Need to iterate without copying; create a lock and pop through a temporary move queue
+        std::queue<T> temp;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::swap(temp, const_cast<std::queue<T>&>(queue_));
         }
-        queue_copy.pop();
+        while (!temp.empty()) {
+            usage += temp.front().getMemoryUsage();
+            temp.pop();
+        }
+        // Restore original queue
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            std::swap(temp, const_cast<std::queue<T>&>(queue_));
+        }
+    } else {
+        usage += size_.load() * sizeof(T);
     }
     
     return usage;

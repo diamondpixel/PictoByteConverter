@@ -1,11 +1,12 @@
 #include "headers/LogBuffer.h"
-#include "../../Threading/headers/ResourceManager.h"
+#include "Threading/headers/ResourceManager.h"
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
 #include <cmath> // For std::abs
 #include <format> // Added for C++20 std::format
+#include <mutex> // For std::mutex
 
 namespace debug {
     LogBuffer::LogBuffer(size_t capacity, LogContext defaultContext, bool skipInitialTracking)
@@ -18,8 +19,9 @@ namespace debug {
 
         size_t structuralMemory = sizeof(LogBuffer) + (capacity_ * sizeof(LogEntry));
         if (!skipInitialTracking) {
-            // Track initial structural memory allocation only if not skipped
-            ResourceManager::getInstance().trackMemory(structuralMemory, resourceTag_);
+            // Track initial structural memory allocation using pooled memory
+            structuralMemoryBlock_ = ResourceManager::getInstance().getPooledMemory(
+                structuralMemory, ResourceManager::MemoryBlockCategory::GENERIC);
         }
         totalTrackedMemory_.store(structuralMemory, std::memory_order_relaxed);
         // pendingMessageMemoryDelta_ is already initialized to 0 by default member initializer
@@ -27,8 +29,18 @@ namespace debug {
 
     LogBuffer::~LogBuffer() {
         flushMessageMemoryDelta(true); // Force flush any pending message memory changes
-        // Release total tracked memory (structural + any flushed message memory)
-        ResourceManager::getInstance().releaseMemory(totalTrackedMemory_.load(std::memory_order_relaxed), resourceTag_);
+
+        // Release the structural memory block if it was allocated
+        if (structuralMemoryBlock_.isValid()) {
+            ResourceManager::getInstance().releasePooledMemory(structuralMemoryBlock_);
+        }
+        
+        // Release any message memory blocks that are still tracked
+        for (auto& block_id : messageMemoryBlocks_) {
+            if (block_id.isValid()) {
+                ResourceManager::getInstance().releasePooledMemory(block_id);
+            }
+        }
     }
 
     void LogBuffer::append(const std::string &message, LogContext context) {
@@ -196,22 +208,41 @@ namespace debug {
             }
 
             if (deltaToProcess > 0) {
+                // Allocate new memory block for the additional message memory
                 size_t trackAmount = static_cast<size_t>(deltaToProcess);
-                ResourceManager::getInstance().trackMemory(trackAmount, resourceTag_);
-                totalTrackedMemory_.fetch_add(trackAmount, std::memory_order_relaxed);
+                auto block_id = ResourceManager::getInstance().getPooledMemory(
+                    trackAmount, ResourceManager::MemoryBlockCategory::GENERIC);
+                
+                if (block_id.isValid()) {
+                    // Store the block ID for later release
+                    std::lock_guard<std::mutex> lock(memoryBlocksMutex_);
+                    messageMemoryBlocks_.push_back(block_id);
+                    totalTrackedMemory_.fetch_add(trackAmount, std::memory_order_relaxed);
+                }
             } else { // deltaToProcess < 0
                 size_t releaseAmount = static_cast<size_t>(-deltaToProcess);
                 
-                // Ensure we don't command ResourceManager to release more than it might know about this tag for messages,
-                // and prevent totalTrackedMemory_ from underflowing due to this specific delta.
-                // totalTrackedMemory_ includes structural + message memory.
-                // We primarily ensure ResourceManager calls are sensible.
-
-                ResourceManager::getInstance().releaseMemory(releaseAmount, resourceTag_);
-                totalTrackedMemory_.fetch_sub(releaseAmount, std::memory_order_relaxed); 
-                // Note: fetch_sub on unsigned can wrap. totalTrackedMemory_ should remain >= structural memory.
-                // Proper clamping or checking against structural memory might be needed if accounting errors are possible.
-                // For now, assume deltas correctly reflect actual message memory changes.
+                // Release memory blocks until we've released enough memory
+                std::lock_guard<std::mutex> lock(memoryBlocksMutex_);
+                size_t releasedSoFar = 0;
+                
+                // We'll release blocks until we've released approximately the right amount
+                while (!messageMemoryBlocks_.empty() && releasedSoFar < releaseAmount) {
+                    auto block_id = messageMemoryBlocks_.back();
+                    if (block_id.isValid()) {
+                        size_t blockSize = releaseAmount / messageMemoryBlocks_.size();
+                        if (blockSize == 0) blockSize = 1; // Ensure we're releasing something
+                        ResourceManager::getInstance().releasePooledMemory(block_id);
+                        releasedSoFar += blockSize;
+                        messageMemoryBlocks_.pop_back();
+                    } else {
+                        // Invalid block ID, just remove it
+                        messageMemoryBlocks_.pop_back();
+                    }
+                }
+                
+                // Update the total tracked memory
+                totalTrackedMemory_.fetch_sub(std::min(releaseAmount, releasedSoFar), std::memory_order_relaxed);
             }
         }
     }

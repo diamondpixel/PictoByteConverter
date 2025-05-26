@@ -16,7 +16,7 @@
 // Forward declarations
 std::string formatDataSize(size_t bytes);
 
-void processMessageQueue();
+
 
 /**
  * Format a data size in human-readable format (KB, MB, etc.)

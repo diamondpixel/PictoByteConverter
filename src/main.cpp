@@ -1,190 +1,107 @@
-#include "Image/headers/ParseToImage.h"
-#include "Image/headers/ParseFromImage.h"
-#include "Debug/headers/Debug.h"
-#include <filesystem>
 #include <iostream>
-#include <string>
+#include <vector>
+#include <random>
+#include <chrono>
+#include <filesystem>
+#include <future>
+#include <Debug/headers/Debug.h>
 
-using namespace std;
+#include "Threading/headers/ThreadPool.h"
+#include "Threading/headers/ResourceManager.h"
+#include "Image/headers/BitmapImage.h"
+#include "Tasks/headers/ImageTaskInternal.h"
 
-void printUsage() {
-    printStatus("Usage: ConvertToImage [options]");
-    std::cout << "Options:" << std::endl;
-    std::cout << "  --debug            Enable debug output mode" << std::endl;
-    std::cout << "  --mode=<mode>      Select operation mode (0: File to Image, 1: Image to File)" << std::endl;
-    std::cout << "  --input=<file>     Specify input file" << std::endl;
-    std::cout << "  --output=<file>    Specify output file" << std::endl;
-    std::cout << "  --maxCPU=<num>     Maximum number of CPU threads to use (default: auto)" << std::endl;
-    std::cout << "  --maxMemory=<MB>   Maximum memory to use in MB (default: 1024)" << std::endl;
-    std::cout << "  --maxChunkSize=<MB> Maximum chunk size in MB (default: 9)" << std::endl;
-    std::cout << "  --newMaxImageSize=<MB> Maximum BMP image size in MB (default: 100)" << std::endl;
-    std::cout << "  --help             Display this help message" << std::endl;
+// Function to process an image task
+void processImageTask(ImageTaskInternal &task) {
+    // Persist the bitmap to disk (BMP)
+   task.image.save(task.filename);
+    // Clear memory after use
+    task.image.clear();
 }
 
-int main(int argc, char *argv[]) {
-    int mode = -1; // Default: File to Image
-    string inputFile; // Path on D: drive
-    string outputFile; // Path on D: drive
-    bool debugMode = false;
-    int maxThreads = 0; // Default: auto (determined by system)
-    int maxMemoryMB = 1024; // Default: 1GB
-    int maxChunkSizeMB = 9; // Default: 9MB per chunk
-    int newMaxImageSizeMB = 100; // Default: 100MB max BMP image size
+int main() {
+    using namespace std::chrono_literals;
 
-    // First pass to check for debug mode
-    for (int i = 1; i < argc; i++) {
-        string arg = argv[i];
-        if (arg == "--debug") {
-            debugMode = true;
-            break;
+    // -------------------------------------------------------------
+    // 0. Ensure required directories exist
+    // -------------------------------------------------------------
+    std::filesystem::create_directories("./output");
+    std::filesystem::create_directories("./spill");
+
+    // -------------------------------------------------------------
+    // 1. Configure system-wide resource limits via ResourceManager
+    // -------------------------------------------------------------
+    auto &rm = ResourceManager::getInstance();
+    rm.setMaxMemory(64 * 1024 * 1024);
+    std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
+    gDebugMode = true;
+
+    // -------------------------------------------------------------
+    // 2. Create a ThreadPool that uses a SpillableQueue<Task>
+    //    All tasks submitted to this pool will therefore be subject
+    //    to automatic in-memory vs. on-disk management.
+    // -------------------------------------------------------------
+    ThreadPool pool(/*threads*/1,
+                               /*queue_size (unused for Spillable)*/100,
+                               /*pool name*/"ImagePool",
+                               /*queue type*/QueueType::Spillable,
+                               /*spill dir*/"./spill");
+
+    // -------------------------------------------------------------
+    // 3. Generate and submit a batch of image-processing tasks that
+    //    intentionally exceed the 50 MB memory limit so we can watch
+    //    the queue spill to disk while the pool keeps working.
+    // -------------------------------------------------------------
+    const int num_tasks = 50;
+    std::mt19937 rng{std::random_device{}()};
+    //std::uniform_int_distribution<int> dist(5700, 5700);
+    std::uniform_int_distribution<int> dist(2700, 2700);
+
+    // Vector to store all the futures
+    std::vector<std::future<void> > futures;
+
+    for (int i = 0; i < num_tasks; ++i) {
+        // Create a moderately large RGB bitmap filled with random bytes
+        int w = dist(rng);
+        int h = dist(rng);
+        BitmapImage img(w, h);
+        img.draw_smiley_face();
+
+        std::string filename = std::format("output/image_{}.bmp", i);
+        uint64_t task_id = rm.getNextTaskId();
+        std::string task_id_str = std::to_string(task_id);
+
+        // 1. Build the image task on the heap
+        auto taskPtr = std::make_unique<ImageTaskInternal>(
+                          filename,
+                          std::move(img),
+                          std::to_string(task_id));
+
+        // 2. Attach the processing callable *inside the object*
+        taskPtr->setFunction([raw = taskPtr.get()] {
+                processImageTask(*raw);
+        });
+
+        // 3. Submit the whole object – all properties preserved
+        std::future<void> fut = pool.submit(std::move(taskPtr));
+        futures.push_back(std::move(fut));
+    }
+
+    pool.shutdown(true);
+
+    // -------------------------------------------------------------
+    // 4. Process the results of all tasks
+    // -------------------------------------------------------------
+    std::cout << "\nChecking task completion status:\n";
+    for (size_t i = 0; i < futures.size(); ++i) {
+        try {
+            // Wait for the task to complete and get its result
+            futures[i].get();
+            std::cout << "Task " << i << ": Completed successfully\n";
+        } catch (const std::exception &e) {
+            // If an exception was thrown during task execution
+            std::cerr << "Task " << i << ": Failed with exception - " << e.what() << std::endl;
         }
-    }
-
-    // Ensure debug mode is globally visible with the strongest memory ordering
-    // Sequential consistency guarantees all threads see the same value
-    gDebugMode.store(debugMode, std::memory_order_seq_cst);
-
-    // Set environment variable for child processes
-    if (debugMode) {
-#ifdef _WIN32
-        _putenv_s("DEBUG", "1");
-#else
-        setenv("DEBUG", "1", 1);
-#endif
-    }
-
-    // Parse command-line arguments
-    for (int i = 1; i < argc; i++) {
-        string arg = argv[i];
-
-        if (arg == "--debug") {
-            // Skip debug mode argument as it's already handled
-            continue;
-        } else if (arg == "--mode" || arg == "-m") {
-            if (i + 1 < argc) {
-                string modeStr = argv[i + 1];
-                if (modeStr == "0" || modeStr == "file2img" || modeStr == "toimage") {
-                    mode = 0;
-                } else if (modeStr == "1" || modeStr == "img2file" || modeStr == "fromimage") {
-                    mode = 1;
-                } else {
-                    printError("Invalid mode: " + modeStr);
-                    printUsage();
-                    return 1;
-                }
-                i++; // Skip the value
-            }
-        } else if (arg.substr(0, 7) == "--mode=") {
-            string modeStr = arg.substr(7);
-            if (modeStr == "0") mode = 0;
-            else if (modeStr == "1") mode = 1;
-            else {
-                printError("Invalid mode: " + modeStr);
-                printUsage();
-                return 1;
-            }
-        } else if (arg.substr(0, 8) == "--input=") {
-            inputFile = arg.substr(8);
-        } else if (arg.substr(0, 9) == "--output=") {
-            outputFile = arg.substr(9);
-        } else if (arg.substr(0, 9) == "--maxCPU=") {
-            try {
-                maxThreads = std::stoi(arg.substr(9));
-                if (maxThreads <= 0) {
-                    printWarning("Invalid maxCPU value: " + std::to_string(maxThreads) + " (must be >= 0)");
-                    maxThreads = 2; // Auto
-                }
-            } catch (const std::exception & [[maybe_unused]] e) {
-                printWarning("Invalid maxCPU value, using default");
-                maxThreads = 2;
-            }
-        } else if (arg.substr(0, 12) == "--maxMemory=") {
-            try {
-                maxMemoryMB = std::stoi(arg.substr(12));
-                if (maxMemoryMB < 64) {
-                    printWarning("Invalid maxMemory value: " + std::to_string(maxMemoryMB) + " MB (must be >= 64 MB)");
-                    maxMemoryMB = 1024; // Default: 1GB
-                }
-            } catch (const std::exception & [[maybe_unused]] e) {
-                printWarning("Invalid maxMemory value, using default (1024 MB)");
-                maxMemoryMB = 1024;
-            }
-        } else if (arg.length() >= 15 && arg.substr(0, 15) == "--maxChunkSize=") {
-            try {
-                maxChunkSizeMB = std::stoi(arg.substr(15));
-                if (maxChunkSizeMB < 1) {
-                    printWarning(
-                        "Invalid maxChunkSize value: " + std::to_string(maxChunkSizeMB) + " MB (must be >= 1 MB)");
-                    maxChunkSizeMB = 9; // Default: 9MB
-                } else if (maxChunkSizeMB > 50) {
-                    printWarning("Large chunk sizes (>50 MB) may lead to memory issues");
-                }
-            } catch (const std::exception & [[maybe_unused]] e) {
-                printWarning("Invalid maxChunkSize value, using default (9 MB)");
-                maxChunkSizeMB = 9;
-            }
-        } else if (arg.length() >= 18 && arg.substr(0, 18) == "--newMaxImageSize=") {
-            try {
-                newMaxImageSizeMB = std::stoi(arg.substr(18));
-                if (newMaxImageSizeMB < 100) {
-                    printWarning(
-                        "Invalid maxImageSize value: " + std::to_string(newMaxImageSizeMB) + " MB (must be >= 100 MB)");
-                    newMaxImageSizeMB = 100; // Default: 100MB
-                } else if (newMaxImageSizeMB > 500) {
-                    printWarning("Very large image sizes (>500 MB) may not be supported by all image viewers");
-                }
-            } catch (const std::exception & [[maybe_unused]] e) {
-                printWarning("Invalid maxImageSize value, using default (100 MB)");
-                newMaxImageSizeMB = 100;
-            }
-        } else if (arg == "--help") {
-            printUsage();
-            return 0;
-        } else {
-            printError("Unknown option: " + arg);
-            printUsage();
-            return 1;
-        }
-    }
-
-    // Display current working directory
-    // printFilePath("Current working directory: " + std::filesystem::current_path().string());
-
-    // Show operation mode in color
-    if (mode == 0) {
-        printStatus("Mode: File to Image");
-    } else {
-        printStatus("Mode: Image to File");
-    }
-
-    // Show debug status if enabled
-    if (debugMode) {
-        printStatus("Debug mode: Enabled");
-    }
-
-    [[maybe_unused]] bool success = false;
-    switch (mode) {
-        case 0:
-            printProcessingStep("Converting file to image...");
-            printFilePath("Input: " + inputFile);
-            printFilePath("Output: " + outputFile);
-            parseToImage(inputFile, outputFile, maxChunkSizeMB, maxThreads, maxMemoryMB, newMaxImageSizeMB);
-            break;
-        case 1:
-            printProcessingStep("Extracting file from image...");
-            if (!outputFile.empty()) {
-                printFilePath("Input: " + inputFile);
-                printFilePath("Output: " + outputFile);
-                parseFromImage(inputFile, outputFile, maxThreads, maxMemoryMB);
-            } else {
-                printFilePath("Input: " + inputFile);
-                parseFromImage(inputFile, "", maxThreads, maxMemoryMB);
-            }
-            break;
-        default:
-            printError("No valid mode selected");
-            printUsage();
-            return 1;
     }
 
     return 0;

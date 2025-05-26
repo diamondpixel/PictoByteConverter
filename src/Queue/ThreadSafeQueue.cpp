@@ -5,12 +5,12 @@
 #include "../Debug/headers/LogBufferManager.h"
 #include "../Debug/headers/LogBuffer.h"
 #include "../Threading/headers/ResourceManager.h"
+#include <memory>
 
 using RM = ResourceManager;
 
 // Implementation of ThreadSafeQueue methods
 #include "inlines/ThreadSafeQueue.inl"
 
-// Explicit template instantiations
-template class ThreadSafeQueue<ImageTaskInternal>;
-template class ThreadSafeQueue<Task>;
+// Explicit template instantiation for unique_ptr tasks
+template class ThreadSafeQueue<std::unique_ptr<Task>>;
