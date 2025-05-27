@@ -6,7 +6,7 @@
 #include <ctime>
 #include <cmath> // For std::abs
 #include <format> // Added for C++20 std::format
-#include <mutex> // For std::mutex
+#include "headers/NullMutex.h"
 
 namespace debug {
     LogBuffer::LogBuffer(size_t capacity, LogContext defaultContext, bool skipInitialTracking)
@@ -44,7 +44,7 @@ namespace debug {
     }
 
     void LogBuffer::append(const std::string &message, LogContext context) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
 
         std::ptrdiff_t messageDelta = 0;
         LogEntry newEntry(message, context);
@@ -91,7 +91,7 @@ namespace debug {
     }
 
     std::vector<LogEntry> LogBuffer::readAll() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
 
         if (count_ == 0) {
             return {};
@@ -112,7 +112,7 @@ namespace debug {
     }
 
     std::vector<LogEntry> LogBuffer::readRecent(size_t count, std::optional<LogContext> contextFilter) const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
 
         if (count_ == 0) {
             return {};
@@ -145,7 +145,7 @@ namespace debug {
     }
 
     void LogBuffer::clear() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
 
         flushMessageMemoryDelta(true); // Flush any pending changes first
 
@@ -173,7 +173,7 @@ namespace debug {
     }
 
     size_t LogBuffer::size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
         return count_;
     }
 
@@ -183,12 +183,12 @@ namespace debug {
     }
 
     void LogBuffer::setDefaultContext(LogContext context) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
         defaultContext_ = context;
     }
 
     LogContext LogBuffer::getDefaultContext() const {
-        std::lock_guard<std::mutex> lock(mutex_);
+        debug::NullLockGuard lock(mutex_);
         return defaultContext_;
     }
 
@@ -215,7 +215,7 @@ namespace debug {
                 
                 if (block_id.isValid()) {
                     // Store the block ID for later release
-                    std::lock_guard<std::mutex> lock(memoryBlocksMutex_);
+                    debug::NullLockGuard lock(memoryBlocksMutex_);
                     messageMemoryBlocks_.push_back(block_id);
                     totalTrackedMemory_.fetch_add(trackAmount, std::memory_order_relaxed);
                 }
@@ -223,7 +223,7 @@ namespace debug {
                 size_t releaseAmount = static_cast<size_t>(-deltaToProcess);
                 
                 // Release memory blocks until we've released enough memory
-                std::lock_guard<std::mutex> lock(memoryBlocksMutex_);
+                debug::NullLockGuard lock(memoryBlocksMutex_);
                 size_t releasedSoFar = 0;
                 
                 // We'll release blocks until we've released approximately the right amount

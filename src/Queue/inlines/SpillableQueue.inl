@@ -144,12 +144,6 @@ bool SpillableQueue<T>::push(T &&item) {
             " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
             " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
         debug::LogContext::Debug);
-
-    // Console debug output as well for immediate visibility
-    std::cout << "[DEBUG][SpillableQueue] '" << queue_name_ << "' push: item_size=" << item_memory_usage
-              << " bytes, RM current=" << RM::getInstance().getCurrentMemoryUsage()
-              << " bytes, RM max=" << RM::getInstance().getMaxMemory() << " bytes" << std::endl;
-
     // Reject only if single item exceeds global max *and* spilling disabled; otherwise we'll spill immediately
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
@@ -191,9 +185,6 @@ bool SpillableQueue<T>::push(T &&item) {
                 debug::LogContext::Error);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
-            std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                      << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                      << " max=" << RM::getInstance().getMaxMemory() << std::endl;
             wait_for_memory(item_memory_usage);
         } else {
             if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
@@ -207,9 +198,6 @@ bool SpillableQueue<T>::push(T &&item) {
                         size_t light_mem = item->getMemoryUsage();
                         queue_.push(std::move(item)); // re-queue as light task
                         current_queue_memory_usage_ += light_mem;
-                        std::cout << "[DEBUG][SpillableQueue] SPILLED " << queue_name_ << " light="
-                                  << light_mem << " cur=" << RM::getInstance().getCurrentMemoryUsage()
-                                  << std::endl;
                         cv_.notify_one();
                         return true;
                     }
@@ -224,9 +212,6 @@ bool SpillableQueue<T>::push(T &&item) {
                         size_t light_mem2 = item->getMemoryUsage();
                         queue_.push(std::move(item));
                         current_queue_memory_usage_ += light_mem2;
-                        std::cout << "[DEBUG][SpillableQueue] SPILLED " << queue_name_ << " light="
-                                  << light_mem2 << " cur=" << RM::getInstance().getCurrentMemoryUsage()
-                                  << std::endl;
                         cv_.notify_one();
                         return true;
                     }
@@ -239,11 +224,6 @@ bool SpillableQueue<T>::push(T &&item) {
             } catch (...) {
                 /* ignore cleanup error */
             }
-
-            // Spilling failed – wait for memory then push in-memory
-            std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                      << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                      << " max=" << RM::getInstance().getMaxMemory() << std::endl;
             wait_for_memory(item_memory_usage);
         }
     }
@@ -258,10 +238,6 @@ bool SpillableQueue<T>::push(T &&item) {
             "SpillableQueue",
             "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.",
             debug::LogContext::Debug);
-
-        std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                  << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                  << " max=" << RM::getInstance().getMaxMemory() << std::endl;
         cv_.wait(lock, [&]() {
             return shutdown_flag_.load() ||
                    (RM::getInstance().getCurrentMemoryUsage() + item_memory_usage <=
@@ -305,12 +281,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
             " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
             " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
         debug::LogContext::Debug);
-
-    // Console debug output
-    std::cout << "[DEBUG][SpillableQueue] '" << queue_name_ << "' try_push: item_size=" << item_memory_usage
-              << " bytes, RM current=" << RM::getInstance().getCurrentMemoryUsage()
-              << " bytes, RM max=" << RM::getInstance().getMaxMemory() << " bytes" << std::endl;
-
     // Reject only if single item exceeds global max *and* spilling disabled
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
@@ -352,9 +322,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
                 debug::LogContext::Error);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
-            std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                      << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                      << " max=" << RM::getInstance().getMaxMemory() << std::endl;
             wait_for_memory(item_memory_usage);
         } else {
             if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
@@ -368,9 +335,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
                         size_t light_mem3 = item->getMemoryUsage();
                         queue_.push(std::move(item)); // re-queue as light task
                         current_queue_memory_usage_ += light_mem3;
-                        std::cout << "[DEBUG][SpillableQueue] SPILLED " << queue_name_ << " light="
-                                  << light_mem3 << " cur=" << RM::getInstance().getCurrentMemoryUsage()
-                                  << std::endl;
                         cv_.notify_one();
                         return true;
                     }
@@ -385,9 +349,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
                         size_t light_mem4 = item->getMemoryUsage();
                         queue_.push(std::move(item));
                         current_queue_memory_usage_ += light_mem4;
-                        std::cout << "[DEBUG][SpillableQueue] SPILLED " << queue_name_ << " light="
-                                  << light_mem4 << " cur=" << RM::getInstance().getCurrentMemoryUsage()
-                                  << std::endl;
                         cv_.notify_one();
                         return true;
                     }
@@ -398,10 +359,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
             try {
                 if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
             } catch (...) {}
-
-            std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                      << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                      << " max=" << RM::getInstance().getMaxMemory() << std::endl;
             wait_for_memory(item_memory_usage);
         }
     }
@@ -416,10 +373,6 @@ bool SpillableQueue<T>::try_push(T &&item) {
             "SpillableQueue",
             "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.",
             debug::LogContext::Debug);
-
-        std::cout << "[DEBUG][SpillableQueue] WAIT " << queue_name_ << " cur="
-                  << RM::getInstance().getCurrentMemoryUsage() << " item=" << item_memory_usage
-                  << " max=" << RM::getInstance().getMaxMemory() << std::endl;
         cv_.wait(lock, [&]() {
             return shutdown_flag_.load() ||
                    (RM::getInstance().getCurrentMemoryUsage() + item_memory_usage <=
@@ -494,8 +447,6 @@ bool SpillableQueue<T>::pop(T &item) {
             }
         }
         current_queue_memory_usage_ -= item_mem_usage;
-        std::cout << "[DEBUG][SpillableQueue] POP " << queue_name_ << " freed=" << item_mem_usage
-                  << " cur=" << RM::getInstance().getCurrentMemoryUsage() << std::endl;
         // Notify potential producer threads waiting for memory
         cv_.notify_all();
         return true;
@@ -554,8 +505,6 @@ bool SpillableQueue<T>::try_pop(T &item) {
             }
         }
         current_queue_memory_usage_ -= item_mem_usage2;
-        std::cout << "[DEBUG][SpillableQueue] POP " << queue_name_ << " freed=" << item_mem_usage2
-                  << " cur=" << RM::getInstance().getCurrentMemoryUsage() << std::endl;
         // Notify waiting producers that memory has been freed
         cv_.notify_all();
         return true;

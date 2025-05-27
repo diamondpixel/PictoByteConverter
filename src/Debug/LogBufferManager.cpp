@@ -3,8 +3,19 @@
 #include <format> // Added for C++20 std::format
 #include <atomic> // Added for std::atomic<bool>
 #include <Threading/headers/ThreadPool.h>
+#include <thread>
+#include <chrono>
+#include "headers/RingBuffer.h"
 
 namespace debug {
+
+// ---- ProducerTLS definition & TLS instance ----
+struct LogBufferManager::ProducerTLS {
+    RingBuffer<PendingLog, 1024> ring;
+    bool registered{false};
+};
+
+static thread_local LogBufferManager::ProducerTLS tls_producer;
 
 // Initialize singleton instance
 LogBufferManager& LogBufferManager::getInstance() {
@@ -74,12 +85,30 @@ void LogBufferManager::appendTo(const std::string& name, const std::string& mess
 
     RecursionGuard guard(tls_inside_resource_manager_log_append, name);
 
+    // ensure flusher running
+    start_flusher_if_needed();
+
+    bool on_flusher_thread = flusher_thread_.joinable() && std::this_thread::get_id() == flusher_thread_.get_id();
+
+    if (!on_flusher_thread) {
+        // register TLS producer once
+        if (!tls_producer.registered) {
+            {
+                std::lock_guard<std::mutex> lk(producers_mutex_);
+                producers_.push_back(&tls_producer);
+            }
+            tls_producer.registered = true;
+        }
+
+        PendingLog pl{ name, message, context };
+        if (tls_producer.ring.try_push(pl)) {
+            return;
+        }
+    }
+
+    // slow path direct append (also used by flusher thread)
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    
-    // Get or create buffer
     LogBuffer& buffer = getOrCreateInternal(name, DEFAULT_CAPACITY, DEFAULT_CONTEXT);
-    
-    // Append message with specified or default context
     buffer.append(message, context.value_or(buffer.getDefaultContext()));
 }
 
@@ -222,6 +251,11 @@ void LogBufferManager::shutdown() {
         //std::cout << "LogBufferManager ThreadPool shutdown complete." << std::endl;
     } // threadPool_ unique_ptr will be destroyed if owned, or just detach if not owned
 
+    // join flusher
+    if (flusher_thread_.joinable()) {
+        flusher_thread_.join();
+    }
+
     // Optional: Log shutdown completion
     // std::cout << "LogBufferManager shutdown complete." << std::endl;
 }
@@ -235,6 +269,31 @@ ThreadPool& LogBufferManager::getThreadPool() {
     }
     
     return *threadPool_;
+}
+
+// member helper
+void LogBufferManager::start_flusher_if_needed() {
+    if (!flusher_thread_.joinable()) {
+        flusher_thread_ = std::thread(&debug::LogBufferManager::flusher_loop, this);
+    }
+}
+
+void LogBufferManager::flusher_loop() {
+    using namespace std::chrono_literals;
+    while (!shutting_down_.load(std::memory_order_relaxed)) {
+        {
+            std::lock_guard<std::mutex> lk(producers_mutex_);
+            for (auto *prod : producers_) {
+                PendingLog pl;
+                while (prod && prod->ring.try_pop(pl)) {
+                    std::lock_guard<std::recursive_mutex> lock(mutex_);
+                    LogBuffer &buf = getOrCreateInternal(pl.name, DEFAULT_CAPACITY, DEFAULT_CONTEXT);
+                    buf.append(pl.message, pl.ctx.value_or(buf.getDefaultContext()));
+                }
+            }
+        }
+        std::this_thread::sleep_for(2ms);
+    }
 }
 
 // Define the thread-local storage flag

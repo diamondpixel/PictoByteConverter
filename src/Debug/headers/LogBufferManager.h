@@ -8,6 +8,7 @@
 #include <optional>
 #include <atomic>
 #include "LogBuffer.h"
+#include "RingBuffer.h"
 
 // Forward declaration
 class ThreadPool;
@@ -133,6 +134,23 @@ public:
     // Flag to prevent recursive logging to ResourceManager from ResourceManager itself
     static thread_local bool tls_inside_resource_manager_log_append;
 
+    // Per-thread producer ring holder
+    struct ProducerTLS;
+
+    // async ring producer list
+    std::vector<ProducerTLS*> producers_;
+    std::mutex producers_mutex_;
+    std::thread flusher_thread_;
+
+    void start_flusher_if_needed();
+    void flusher_loop();
+
+    struct PendingLog {
+        std::string name;
+        std::string message;
+        std::optional<LogContext> ctx;
+    };
+
 private:
     // Private constructor for singleton
     LogBufferManager();
@@ -166,6 +184,7 @@ private:
     // Helper methods
     LogBuffer& getOrCreateInternal(const std::string& name, size_t capacity, debug::LogContext defaultContext);
     ThreadPool& getThreadPool();
+
 };
 
 } // namespace debug

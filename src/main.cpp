@@ -33,7 +33,7 @@ int main() {
     // -------------------------------------------------------------
     auto &rm = ResourceManager::getInstance();
     size_t memory = 1024 * 1024 * 1024;
-    rm.setMaxMemory(memory * 32);
+    rm.setMaxMemory(memory * 12);
     std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
     gDebugMode = true;
 
@@ -42,10 +42,10 @@ int main() {
     //    All tasks submitted to this pool will therefore be subject
     //    to automatic in-memory vs. on-disk management.
     // -------------------------------------------------------------
-    ThreadPool pool(/*threads*/16,
+    ThreadPool pool(/*threads*/12,
                                /*queue_size (unused for Spillable)*/100,
                                /*pool name*/"ImagePool",
-                               /*queue type*/QueueType::LockFree,
+                               /*queue type*/QueueType::Spillable,
                                /*spill dir*/"./spill");
 
     // -------------------------------------------------------------

@@ -3,12 +3,12 @@
 
 #include <string>
 #include <vector>
-#include <mutex>
 #include <chrono>
 #include <memory>
 #include <atomic>
 #include <optional>
 #include "../../Threading/headers/ResourceManager.h" // Include for MemoryBlockId
+#include "NullMutex.h"
 
 // Forward declaration for ResourceManager
 class ResourceManager;
@@ -164,8 +164,8 @@ private:
     LogContext defaultContext_;
     
     // Thread synchronization
-    mutable std::mutex mutex_;
-    mutable std::mutex memoryBlocksMutex_; // For thread-safe access to messageMemoryBlocks_
+    mutable debug::NullMutex mutex_;
+    mutable debug::NullMutex memoryBlocksMutex_; // For thread-safe access to messageMemoryBlocks_
     
     // Memory tracking
     std::string resourceTag_;

@@ -16,6 +16,7 @@
 #include <ranges>
 
 #include "Debug/headers/LogBufferManager.h" // Assuming this is still used for general logging
+#include "Debug/headers/LogMacros.h"
 #include "Debug/headers/LogBuffer.h"      // Assuming this is still used for general logging
 #include "Queue/headers/WorkStealingDeque.h"
 
@@ -38,23 +39,16 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string 
                 pool_name
             );
             
-            debug::LogBufferManager::getInstance().appendTo(
-                "ThreadPool",
-                "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
-                + " threads. Using SpillableQueue with spill path: " + (spill_path.empty() ? "disabled" : spill_path),
-                debug::LogContext::Debug);
-            break;
-        
+            LOG_DBG("ThreadPool", "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
+                + " threads. Using SpillableQueue with spill path: " + (spill_path.empty() ? "disabled" : spill_path));
+
         case QueueType::LockFree:
         default:
             // Default: Create LockFreeQueue (bounded)
             tasks_ = std::make_unique<LockFreeQueue<std::unique_ptr<Task>>>(queue_size, pool_name);
             
-            debug::LogBufferManager::getInstance().appendTo(
-                "ThreadPool",
-                "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
-                + " threads. Using LockFreeQueue with max size: " + std::to_string(queue_size),
-                debug::LogContext::Debug);
+            LOG_DBG("ThreadPool", "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
+                + " threads. Using LockFreeQueue with max size: " + std::to_string(queue_size));
             break;
     }
     // Create per-thread work-stealing deques
