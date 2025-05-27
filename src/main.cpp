@@ -33,7 +33,7 @@ int main() {
     // -------------------------------------------------------------
     auto &rm = ResourceManager::getInstance();
     size_t memory = 1024 * 1024 * 1024;
-    rm.setMaxMemory(memory * 16);
+    rm.setMaxMemory(memory * 32);
     std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
     gDebugMode = true;
 
@@ -45,7 +45,7 @@ int main() {
     ThreadPool pool(/*threads*/16,
                                /*queue_size (unused for Spillable)*/100,
                                /*pool name*/"ImagePool",
-                               /*queue type*/QueueType::Spillable,
+                               /*queue type*/QueueType::LockFree,
                                /*spill dir*/"./spill");
 
     // -------------------------------------------------------------
@@ -56,7 +56,7 @@ int main() {
     auto start_time = std::chrono::high_resolution_clock::now();
     const int num_tasks = 50;
     std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> dist(1700, 1700);
+    std::uniform_int_distribution<int> dist(5700, 5700);
 
     // Vector to store all the futures
     std::vector<std::future<void> > futures;

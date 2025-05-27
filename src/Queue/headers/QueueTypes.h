@@ -7,7 +7,7 @@
  * @brief Enum defining the different types of queues available in the system
  */
 enum class QueueType {
-    ThreadSafe = 0,   // Standard thread-safe queue with fixed capacity
+    LockFree = 0,   // Standard thread-safe queue with fixed capacity
     Spillable = 1,    // Queue that can spill to disk when memory usage exceeds threshold
 };
 

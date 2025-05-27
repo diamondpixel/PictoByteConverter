@@ -45,15 +45,15 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string 
                 debug::LogContext::Debug);
             break;
         
-        case QueueType::ThreadSafe:
+        case QueueType::LockFree:
         default:
-            // Default: Create ThreadSafeQueue
-            tasks_ = std::make_unique<ThreadSafeQueue<std::unique_ptr<Task>>>(queue_size, pool_name);
+            // Default: Create LockFreeQueue (bounded)
+            tasks_ = std::make_unique<LockFreeQueue<std::unique_ptr<Task>>>(queue_size, pool_name);
             
             debug::LogBufferManager::getInstance().appendTo(
                 "ThreadPool",
                 "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
-                + " threads. Using ThreadSafeQueue with max size: " + std::to_string(queue_size),
+                + " threads. Using LockFreeQueue with max size: " + std::to_string(queue_size),
                 debug::LogContext::Debug);
             break;
     }

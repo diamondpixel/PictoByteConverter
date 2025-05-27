@@ -23,8 +23,8 @@
 #include <unordered_map> // Added for task_metrics_ map
 #include <Debug/headers/LogBufferManager.h>
 #include <Queue/headers/QueueBase.h> // Include QueueBase interface
-#include <Queue/headers/ThreadSafeQueue.h> // Include ThreadSafeQueue implementation
 #include <Queue/headers/SpillableQueue.h> // Include SpillableQueue implementation
+#include <Queue/headers/LockFreeQueue.h>
 #include <Queue/headers/QueueTypes.h> // Include QueueTypes enum
 #include <Queue/headers/WorkStealingDeque.h>
 #include <Tasks/headers/_Task.h> // Include Task class header
@@ -113,7 +113,7 @@ public:
      */
     explicit ThreadPool(size_t num_threads = 0, size_t queue_size = 100,
                         const std::string &pool_name = "ThreadPool",
-                        QueueType queue_type = QueueType::ThreadSafe,
+                        QueueType queue_type = QueueType::LockFree,
                         const std::string &spill_path = "");
 
     /**
