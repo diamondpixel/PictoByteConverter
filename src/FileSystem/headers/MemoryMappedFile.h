@@ -2,7 +2,6 @@
 #define MEMORY_MAPPED_FILE_H
 
 #include <string>
-#include <vector> // For potential future use, not strictly needed by this header alone
 #include <cstdint> // For uintptr_t and size_t
 
 // Define NOMINMAX to prevent windows.h from defining min and max macros
@@ -10,9 +9,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-
-// Assuming Debug.h provides these print functions and is correctly included
-#include "../../Debug/headers/Debug.h"
+#include "Debug/headers/LogMacros.h"
 
 // Define error codes for MemoryMappedFile operations
 struct MmfError {
@@ -102,7 +99,7 @@ public:
      */
     [[nodiscard]] int open(const std::string& filePath, MmfAccessMode mode, size_t mappingSize = 0) {
         if (isOpen()) {
-            printError("MemoryMappedFile: Attempted to open an already open file instance.");
+             LOG_ERR("MMF", "MemoryMappedFile: Attempted to open an already open file instance.", debug::LogContext::Error);
             return MmfError::AlreadyOpen;
         }
 
@@ -137,12 +134,12 @@ public:
                 flProtect = PAGE_READWRITE;
                 dwMapViewDesiredAccess = FILE_MAP_WRITE;
                 if (mappingSize == 0) {
-                    printError("MemoryMappedFile: mappingSize cannot be 0 for WriteCreate mode.");
+                    LOG_ERR("MMF", "MemoryMappedFile: mappingSize cannot be 0 for WriteCreate mode.", debug::LogContext::Error);
                     return MmfError::InvalidArguments;
                 }
                 break;
             default:
-                printError("MemoryMappedFile: Invalid access mode specified.");
+                LOG_ERR("MMF", "MemoryMappedFile: Invalid access mode specified.", debug::LogContext::Error);
                 return MmfError::InvalidArguments;
         }
 
@@ -156,7 +153,8 @@ public:
             nullptr);
 
         if (m_hFile == INVALID_HANDLE_VALUE) {
-            printError("MemoryMappedFile: CreateFileA failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError()));
+            std::string msg = "MemoryMappedFile: CreateFileA failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError());
+            LOG_ERR("MMF", msg, debug::LogContext::Error);
             return MmfError::FileOpenFailed;
         }
 
@@ -164,14 +162,15 @@ public:
         if (mode == MmfAccessMode::ReadOnly) {
             LARGE_INTEGER liFileSize;
             if (!GetFileSizeEx(m_hFile, &liFileSize)) {
-                printError("MemoryMappedFile: GetFileSizeEx failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError()));
+                std::string msg = "MemoryMappedFile: GetFileSizeEx failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError());
+                LOG_ERR("MMF", msg, debug::LogContext::Error);
                 internalClose(); return MmfError::FileSizeQueryFailed;
             }
             m_currentSize = static_cast<size_t>(liFileSize.QuadPart);
             if (m_currentSize == 0) {
                 // For ReadOnly, an empty file means no mapping.
                 // SpillableQueue might treat this as an error or handle it.
-                printWarning("MemoryMappedFile: Input file \"" + filePath + "\" is empty.");
+                LOG_ERR("MMF", "MemoryMappedFile: Input file \"" + filePath + "\" is empty.", debug::LogContext::Error);
                 // No need to map, but file handle is open. Close it if this is an error state.
                 // For now, let's assume this is acceptable and close() will handle it if mapping fails.
                 // For ReadOnly and empty file, we won't proceed to map.
@@ -200,7 +199,8 @@ public:
             nullptr); // Name of mapping object (unnamed)
 
         if (m_hMapping == nullptr) {
-            printError("MemoryMappedFile: CreateFileMappingA failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError()));
+            std::string msg = "MemoryMappedFile: CreateFileMappingA failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError());
+            LOG_ERR("MMF", msg, debug::LogContext::Error);
             internalClose(); return MmfError::FileMappingFailed;
         }
 
@@ -212,7 +212,8 @@ public:
             m_currentSize); // Number of bytes to map (0 means map from offset to end of file mapping)
 
         if (m_pMappedView == nullptr) {
-            printError("MemoryMappedFile: MapViewOfFile failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError()));
+            std::string msg = "MemoryMappedFile: MapViewOfFile failed for \"" + filePath + "\". Error code: " + std::to_string(GetLastError());
+            LOG_ERR("MMF", msg, debug::LogContext::Error);
             internalClose(); return MmfError::MapViewFailed;
         }
 
@@ -230,7 +231,7 @@ public:
 
     [[nodiscard]] unsigned char* getWritableData() const {
         if (m_accessMode == MmfAccessMode::ReadOnly) {
-            printError("MemoryMappedFile: getWritableData() called on a read-only mapping.");
+            LOG_ERR("MMF", "MemoryMappedFile: getWritableData() called on a read-only mapping.", debug::LogContext::Error);
             return nullptr;
         }
         return static_cast<unsigned char*>(m_pMappedView);
@@ -248,11 +249,11 @@ public:
     // Returns MmfError::Success or an error code.
     [[nodiscard]] int flush(size_t offset = 0, size_t bytesToFlush = 0) {
         if (!isOpen()) {
-            printError("MemoryMappedFile: flush() called on a closed file.");
+            LOG_ERR("MMF", "MemoryMappedFile: flush() called on a closed file.", debug::LogContext::Error);
             return MmfError::NotOpen;
         }
         if (m_accessMode == MmfAccessMode::ReadOnly) {
-            printWarning("MemoryMappedFile: flush() called on a read-only file. No operation performed.");
+            LOG_ERR("MMF", "MemoryMappedFile: flush() called on a read-only file. No operation performed.", debug::LogContext::Error);
             return MmfError::Success; // Not an error, just no-op
         }
 
@@ -261,12 +262,12 @@ public:
         }
 
         if (offset + bytesToFlush > m_currentSize) {
-            printError("MemoryMappedFile: flush() range exceeds mapped size.");
+            LOG_ERR("MMF", "MemoryMappedFile: flush() range exceeds mapped size.", debug::LogContext::Error);
             return MmfError::InvalidArguments;
         }
 
         if (!FlushViewOfFile(reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(m_pMappedView)) + offset), bytesToFlush)) {
-            printError("MemoryMappedFile: FlushViewOfFile failed. Error code: " + std::to_string(GetLastError()));
+            LOG_ERR("MMF", "MemoryMappedFile: FlushViewOfFile failed. Error code: " + std::to_string(GetLastError()), debug::LogContext::Error);
             return MmfError::MapViewFailed; // Reusing, or add specific FlushFailed error
         }
         return MmfError::Success;

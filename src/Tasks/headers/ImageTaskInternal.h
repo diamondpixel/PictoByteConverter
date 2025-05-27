@@ -5,7 +5,7 @@
 #include <chrono>
 #include <utility>
 #include "_Task.h"
-#include "../../Debug/headers/Debug.h"
+#include "Debug/headers/LogMacros.h"
 #include <Image/headers/BitmapImage.h>
 
 
@@ -181,17 +181,17 @@ struct ImageTaskInternal : Task {
     bool serialize(std::ostream &os) const override {
         // Serialize base Task members first
         if (!Task::serialize(os)) {
-            std::cerr << "[ERROR] ImageTaskInternal::serialize: Base Task::serialize failed." << std::endl;
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::serialize: Base Task::serialize failed.", debug::LogContext::Error);
             return false;
         }
         if (!Task::write_string(os, filename)) {
             // Using Task::write_string as the helper
-            std::cerr << "[ERROR] ImageTaskInternal::serialize: Task::write_string for filename failed." << std::endl;
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::serialize: Task::write_string for filename failed.", debug::LogContext::Error);
             return false;
         }
         // Serialize BitmapImage
         if (!image.serialize(os)) {
-            std::cerr << "[ERROR] ImageTaskInternal::serialize: image.serialize(os) failed." << std::endl;
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::serialize: image.serialize(os) failed.", debug::LogContext::Error);
             return false;
         }
         return os.good(); // Final check on stream state
@@ -208,7 +208,7 @@ struct ImageTaskInternal : Task {
 
         // Deserialize base Task members first
         if (!Task::deserialize(is)) {
-            printError("ImageTaskInternal::deserialize: Base Task deserialization failed.");
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::deserialize: Base Task deserialization failed.", debug::LogContext::Error);
             return false;
         }
 
@@ -221,7 +221,7 @@ struct ImageTaskInternal : Task {
                 // Basic sanity check for length to prevent excessive allocation
                 if (len > 1024 * 1024 * 10) {
                     // Max 10MB for a filename string, adjust as needed
-                    printError("ImageTaskInternal::deserialize: Excessive string length detected for filename.");
+                    LOG_ERR("ImageTaskInternal", "ImageTaskInternal::deserialize: Excessive string length detected for filename.", debug::LogContext::Error);
                     return false;
                 }
                 s.resize(len);
@@ -233,12 +233,12 @@ struct ImageTaskInternal : Task {
 
         // Deserialize filename
         if (!read_string_local(is, filename)) {
-            printError("ImageTaskInternal::deserialize: Failed to read filename.");
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::deserialize: Failed to read filename.", debug::LogContext::Error);
             return false;
         }
         // Deserialize BitmapImage
         if (!image.deserialize(is)) {
-            printError("ImageTaskInternal::deserialize: BitmapImage deserialization failed.");
+            LOG_ERR("ImageTaskInternal", "ImageTaskInternal::deserialize: BitmapImage deserialization failed.", debug::LogContext::Error);
             return false;
         }
 

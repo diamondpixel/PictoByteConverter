@@ -2,8 +2,6 @@
 #define QUEUE_BASE_H
 
 #include <string>
-#include <mutex>
-#include <type_traits>
 #include "../../Tasks/headers/_Task.h"
 
 /**

@@ -11,6 +11,7 @@
 #include <memory>
 #include <queue>
 #include <iostream>
+#include "../../Debug/headers/LogMacros.h"
 #include "../../Debug/headers/LogBufferManager.h"
 #include "../../Threading/headers/ResourceManager.h"
 
@@ -27,36 +28,28 @@ SpillableQueue<T>::SpillableQueue(std::string spill_path, std::string queue_name
       spill_directory_path_(std::move(spill_path)),
       spill_file_id_counter_(0),
       queue_name_(std::move(queue_name)) {
-    debug::LogBufferManager::getInstance().appendTo(
-        "SpillableQueue",
-        "Creating SpillableQueue '" + queue_name_ + "'.",
-        debug::LogContext::Debug);
+    std::string msg_ctor = "Creating SpillableQueue '" + queue_name_ + "'.";
+    LOG_DBG("SpillableQueue", msg_ctor, debug::LogContext::Debug);
 
     if (!spill_directory_path_.empty()) {
         try {
             if (!std::filesystem::exists(spill_directory_path_)) {
                 if (!std::filesystem::create_directories(spill_directory_path_)) {
-                    debug::LogBufferManager::getInstance().appendTo(
-                        "SpillableQueue",
-                        "Failed to create spill directory: " + spill_directory_path_,
-                        debug::LogContext::Error);
+                    std::string msg_create_dir_fail = "Failed to create spill directory: " + spill_directory_path_;
+                    LOG_ERR("SpillableQueue", msg_create_dir_fail, debug::LogContext::Error);
                 }
             }
         } catch (const std::exception &e) {
-            debug::LogBufferManager::getInstance().appendTo(
-                "SpillableQueue",
-                "Exception creating spill directory: " + std::string(e.what()),
-                debug::LogContext::Error);
+            std::string msg_create_dir_exc = "Exception creating spill directory: " + std::string(e.what());
+            LOG_ERR("SpillableQueue", msg_create_dir_exc, debug::LogContext::Error);
         }
     }
 }
 
 template<typename T>
 SpillableQueue<T>::~SpillableQueue() {
-    debug::LogBufferManager::getInstance().appendTo(
-        "SpillableQueue",
-        "Destroying SpillableQueue '" + queue_name_ + "'",
-        debug::LogContext::Debug);
+    std::string msg_dtor = "Destroying SpillableQueue '" + queue_name_ + "'";
+    LOG_DBG("SpillableQueue", msg_dtor, debug::LogContext::Debug);
 
     SpillableQueue<T>::shutdown();
 
@@ -138,19 +131,15 @@ bool SpillableQueue<T>::push(T &&item) {
     }
 
     // Debug log actual item size and memory state
-    debug::LogBufferManager::getInstance().appendTo(
-        "SpillableQueue",
-        "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
-            " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
-            " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
-        debug::LogContext::Debug);
+    std::string msg_push_check = "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
+                                 " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
+                                 " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory());
+    LOG_DBG("SpillableQueue", msg_push_check, debug::LogContext::Debug);
     // Reject only if single item exceeds global max *and* spilling disabled; otherwise we'll spill immediately
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "SpillableQueue",
-            "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled",
-            debug::LogContext::Warning);
+        std::string msg_task_rejected = "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled";
+        LOG_WARN("SpillableQueue", msg_task_rejected, debug::LogContext::Warning);
         if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
             if (item) item.reset();
         }
@@ -179,10 +168,8 @@ bool SpillableQueue<T>::push(T &&item) {
         };
 
         if (!file.is_open()) {
-            debug::LogBufferManager::getInstance().appendTo(
-                "SpillableQueue",
-                "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_,
-                debug::LogContext::Error);
+            std::string msg_spill_fail = "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_;
+            LOG_ERR("SpillableQueue", msg_spill_fail, debug::LogContext::Error);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
             wait_for_memory(item_memory_usage);
@@ -234,10 +221,8 @@ bool SpillableQueue<T>::push(T &&item) {
     // failure and breaking the associated promise.
     if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "SpillableQueue",
-            "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.",
-            debug::LogContext::Debug);
+        std::string msg_waiting = "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.";
+        LOG_DBG("SpillableQueue", msg_waiting, debug::LogContext::Debug);
         cv_.wait(lock, [&]() {
             return shutdown_flag_.load() ||
                    (RM::getInstance().getCurrentMemoryUsage() + item_memory_usage <=
@@ -275,19 +260,15 @@ bool SpillableQueue<T>::try_push(T &&item) {
     }
 
     // Debug log actual item size and memory state
-    debug::LogBufferManager::getInstance().appendTo(
-        "SpillableQueue",
-        "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
-            " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
-            " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory()),
-        debug::LogContext::Debug);
+    std::string msg_push_check = "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
+                                 " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
+                                 " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory());
+    LOG_DBG("SpillableQueue", msg_push_check, debug::LogContext::Debug);
     // Reject only if single item exceeds global max *and* spilling disabled
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "SpillableQueue",
-            "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled",
-            debug::LogContext::Warning);
+        std::string msg_task_rejected = "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled";
+        LOG_WARN("SpillableQueue", msg_task_rejected, debug::LogContext::Warning);
         if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
             if (item) item.reset();
         }
@@ -316,10 +297,8 @@ bool SpillableQueue<T>::try_push(T &&item) {
         };
 
         if (!file.is_open()) {
-            debug::LogBufferManager::getInstance().appendTo(
-                "SpillableQueue",
-                "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_,
-                debug::LogContext::Error);
+            std::string msg_spill_fail = "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_;
+            LOG_ERR("SpillableQueue", msg_spill_fail, debug::LogContext::Error);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
             wait_for_memory(item_memory_usage);
@@ -369,19 +348,10 @@ bool SpillableQueue<T>::try_push(T &&item) {
     // failure and breaking the associated promise.
     if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "SpillableQueue",
-            "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.",
-            debug::LogContext::Debug);
-        cv_.wait(lock, [&]() {
-            return shutdown_flag_.load() ||
-                   (RM::getInstance().getCurrentMemoryUsage() + item_memory_usage <=
-                    RM::getInstance().getMaxMemory());
-        });
-
-        if (shutdown_flag_) {
-            return false;
-        }
+        // Non-blocking: if would exceed and can't spill, just return false
+        std::string msg_waiting_would_exceed = "Queue '" + queue_name_ + "' try_push failed – would exceed max memory and spilling disabled.";
+        LOG_DBG("SpillableQueue", msg_waiting_would_exceed, debug::LogContext::Debug);
+        return false;
     }
 
     // No spill; keep in-memory
@@ -522,11 +492,9 @@ void SpillableQueue<T>::shutdown() {
     cv_.notify_all();
 
     // Log shutdown for debugging
-    debug::LogBufferManager::getInstance().appendTo(
-        "SpillableQueue",
-        "SpillableQueue '" + queue_name_ + "' shutting down. Items in memory: " +
-        std::to_string(queue_.size()),
-        debug::LogContext::Debug);
+    std::string msg_shutdown = "SpillableQueue '" + queue_name_ + "' shutting down. Items in memory: " +
+        std::to_string(queue_.size());
+    LOG_DBG("SpillableQueue", msg_shutdown, debug::LogContext::Debug);
 }
 
 template<typename T>

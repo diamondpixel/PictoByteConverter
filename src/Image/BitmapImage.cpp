@@ -4,8 +4,8 @@
 #include <windows.h>
 #include <cassert>
 #include <format>
-#include <Debug/headers/Debug.h>
-#include "../Threading/headers/ResourceManager.h"
+#include "Debug/headers/LogMacros.h"
+#include "Threading/headers/ResourceManager.h"
 
 // Initialize static ResourceManager reference
 ResourceManager& BitmapImage::rm_ = ResourceManager::getInstance();
@@ -21,22 +21,22 @@ ResourceManager& BitmapImage::rm_ = ResourceManager::getInstance();
 BitmapImage::BitmapImage(int width, int height) {
     // Guard against excessive allocations (width/height may overflow the multiplication)
     if (width <= 0 || height <= 0) {
-        printError("BitmapImage: invalid dimensions");
+        LOG_ERR("BitmapImage", "BitmapImage: invalid dimensions", debug::LogContext::Error);
         this->~BitmapImage();
         return;
     }
 
     uint64_t total_bytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * bytes_per_pixel();
     if (total_bytes > MAX_IMAGE_BYTES) {
-        printError(std::format("BitmapImage: requested {}x{} exceeds {} MB cap", width, height,
-                               MAX_IMAGE_BYTES / (1024 * 1024)));
+        std::string msg = std::format("BitmapImage: requested {}x{} exceeds {} MB cap", width, height, MAX_IMAGE_BYTES / (1024 * 1024));
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
         this->~BitmapImage();
         return;
     }
 
     // Check ResourceManager capacity before allocating
     if (total_bytes > rm_.getMaxMemory() || rm_.getCurrentMemoryUsage() + total_bytes > rm_.getMaxMemory()) {
-        //printError("BitmapImage: allocation would exceed global memory limit; image ignored");
+        LOG_WARN("BitmapImage", "BitmapImage: allocation would exceed global memory limit; image ignored", debug::LogContext::Error);
         this->~BitmapImage();
         return;
     }
@@ -186,14 +186,14 @@ void BitmapImage::clear() {
  */
 void BitmapImage::resize(int new_width, int new_height) {
     if (new_width <= 0 || new_height <= 0) {
-        printError("BitmapImage::resize: Invalid dimensions, clearing image");
+        LOG_ERR("BitmapImage", "BitmapImage::resize: Invalid dimensions, clearing image", debug::LogContext::Error);
         clear();
         return;
     }
 
     size_t new_total = static_cast<size_t>(new_width) * static_cast<size_t>(new_height) * bytes_per_pixel();
     if (new_total > rm_.getMaxMemory() || rm_.getCurrentMemoryUsage() - tracked_bytes_ + new_total > rm_.getMaxMemory()) {
-        printError("BitmapImage::resize: would exceed memory limit; resize aborted");
+        LOG_ERR("BitmapImage", "BitmapImage::resize: would exceed memory limit; resize aborted", debug::LogContext::Error);
         return;
     }
 
@@ -226,9 +226,8 @@ bool BitmapImage::save(const std::string &filename) const {
     );
 
     if (hFile == INVALID_HANDLE_VALUE) {
-        printError(
-            "Failed to open temporary file for writing: " + temp_filename + ". Error: " +
-            std::to_string(GetLastError()));
+        std::string msg = "Failed to open temporary file for writing: " + temp_filename + ". Error: " + std::to_string(GetLastError());
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
         return false;
     }
 
@@ -294,15 +293,15 @@ bool BitmapImage::save(const std::string &filename) const {
         }
         std::filesystem::rename(temp_filename, filename);
     } catch (const std::filesystem::filesystem_error &e) {
-        printError("Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what());
+        std::string msg = "Failed to rename temporary file " + temp_filename + " to " + filename + ". Error: " + e.what();
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
         try {
             if (std::filesystem::exists(temp_filename)) {
                 std::filesystem::remove(temp_filename);
             }
         } catch (const std::filesystem::filesystem_error &e_remove) {
-            printError(
-                "BitmapImage::save: Failed to remove temp file after rename error: " + temp_filename + ". Error: " +
-                e_remove.what());
+            std::string msg_remove = "BitmapImage::save: Failed to remove temp file after rename error: " + temp_filename + ". Error: " + e_remove.what();
+            LOG_ERR("BitmapImage", msg_remove, debug::LogContext::Error);
             return false;
         }
     }
@@ -319,33 +318,33 @@ bool BitmapImage::save(const std::string &filename) const {
  */
 bool BitmapImage::serialize(std::ostream &os) const {
     if (!os.good()) {
-        std::cerr << "[ERROR] BitmapImage::serialize: Stream not good at entry." << std::endl;
+        LOG_ERR("BitmapImage", "BitmapImage::serialize: Stream not good at entry.", debug::LogContext::Error);
         return false;
     }
 
     os.write(reinterpret_cast<const char *>(&width), sizeof(width));
     if (!os.good()) {
-        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing width." << std::endl;
+        LOG_ERR("BitmapImage", "BitmapImage::serialize: Stream error after writing width.", debug::LogContext::Error);
         return false;
     }
 
     os.write(reinterpret_cast<const char *>(&height), sizeof(height));
     if (!os.good()) {
-        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing height." << std::endl;
+        LOG_ERR("BitmapImage", "BitmapImage::serialize: Stream error after writing height.", debug::LogContext::Error);
         return false;
     }
 
     size_t pixel_data_size = pixels.size();
     os.write(reinterpret_cast<const char *>(&pixel_data_size), sizeof(pixel_data_size));
     if (!os.good()) {
-        std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing pixel_data_size." << std::endl;
+        LOG_ERR("BitmapImage", "BitmapImage::serialize: Stream error after writing pixel_data_size.", debug::LogContext::Error);
         return false;
     }
 
     if (pixel_data_size > 0) {
         os.write(reinterpret_cast<const char *>(pixels.data()), pixel_data_size);
         if (!os.good()) {
-            std::cerr << "[ERROR] BitmapImage::serialize: Stream error after writing pixels." << std::endl;
+            LOG_ERR("BitmapImage", "BitmapImage::serialize: Stream error after writing pixels.", debug::LogContext::Error);
             return false;
         }
     }
@@ -367,23 +366,22 @@ bool BitmapImage::deserialize(std::istream &is) {
     int new_width, new_height;
     if (!is.read(reinterpret_cast<char *>(&new_width), sizeof(new_width)) ||
         !is.read(reinterpret_cast<char *>(&new_height), sizeof(new_height))) {
-        printError("BitmapImage::deserialize: Failed to read dimensions");
+        LOG_ERR("BitmapImage", "BitmapImage::deserialize: Failed to read dimensions", debug::LogContext::Error);
         return false;
     }
 
     // Validate dimensions
     if (new_width <= 0 || new_height <= 0 ||
-        new_width > 65535 || new_height > 65535) {
-        // Reasonable limits
-        printError("BitmapImage::deserialize: Invalid dimensions: " +
-                   std::to_string(new_width) + "x" + std::to_string(new_height));
+        new_width > 65535 || new_height > 65535) { // Reasonable limits
+        std::string msg = "BitmapImage::deserialize: Invalid dimensions: " + std::to_string(new_width) + "x" + std::to_string(new_height);
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
         return false;
     }
 
     // Read pixel data size
     size_t pixels_size = 0;
     if (!is.read(reinterpret_cast<char *>(&pixels_size), sizeof(pixels_size))) {
-        printError("BitmapImage::deserialize: Failed to read pixel data size");
+        LOG_ERR("BitmapImage", "BitmapImage::deserialize: Failed to read pixel data size", debug::LogContext::Error);
         return false;
     }
 
@@ -391,8 +389,8 @@ bool BitmapImage::deserialize(std::istream &is) {
     constexpr size_t MAX_IMAGE_SIZE = 100 * 1024 * 1024; // 100MB sanity check
     if (is.fail() || pixels_size > MAX_IMAGE_SIZE) {
         pixels.clear();
-        printError("BitmapImage::deserialize: Pixel size too large or read failed. Size: " +
-                   std::to_string(pixels_size));
+        std::string msg = "BitmapImage::deserialize: Pixel size too large or read failed. Size: " + std::to_string(pixels_size);
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
         return false;
     }
 
@@ -403,10 +401,10 @@ bool BitmapImage::deserialize(std::istream &is) {
 
     // Validate pixel data size against dimensions
     if (pixels_size > 0 && pixels_size != expected_size) {
-        printError("BitmapImage::deserialize: Pixel data size (" +
-                   std::to_string(pixels_size) + ") doesn't match expected size (" +
-                   std::to_string(expected_size) + ") for dimensions " +
-                   std::to_string(new_width) + "x" + std::to_string(new_height));
+        std::string msg = "BitmapImage::deserialize: Pixel data size (" + std::to_string(pixels_size) + ") doesn't match expected size (" + std::to_string(expected_size) + ") for dimensions " + std::to_string(new_width) + "x" + std::to_string(new_height);
+        LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
+        // Potentially an error, but some formats might have padding/extra data.
+        // For strict BMP, this would be an error. For now, we'll log and try to proceed if pixels_size is what we read.
     }
 
     // Read pixel data
@@ -424,23 +422,22 @@ bool BitmapImage::deserialize(std::istream &is) {
             size_t bytes_read = 0;
 
             while (bytes_read < pixels_size && is.good()) {
-                constexpr size_t CHUNK_SIZE = 8192;
+                constexpr size_t CHUNK_SIZE = 4096;
                 const size_t bytes_to_read = std::min(CHUNK_SIZE, pixels_size - bytes_read);
                 is.read(reinterpret_cast<char *>(pixels.data() + bytes_read),
                         static_cast<std::streamsize>(bytes_to_read));
 
                 const auto chunk_bytes_read = static_cast<size_t>(is.gcount());
                 if (chunk_bytes_read != bytes_to_read) {
-                    printError("BitmapImage::deserialize: Unexpected end of data. Expected " +
-                               std::to_string(bytes_to_read) + " bytes, got " +
-                               std::to_string(chunk_bytes_read));
+                    std::string msg = "BitmapImage::deserialize: Unexpected end of data. Expected " + std::to_string(bytes_to_read) + " bytes, got " + std::to_string(chunk_bytes_read);
+                    LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
                     return false;
                 }
                 bytes_read += chunk_bytes_read;
             }
         } catch (const std::bad_alloc &e) {
-            printError("BitmapImage::deserialize: Failed to allocate memory for pixels: " +
-                       std::string(e.what()));
+            std::string msg = "BitmapImage::deserialize: Failed to allocate memory for pixels: " + std::string(e.what());
+            LOG_ERR("BitmapImage", msg, debug::LogContext::Error);
             pixels.clear();
             width = 0;
             height = 0;

@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cassert>
 #include <cstddef>
+#include <Debug/headers/LogMacros.h>
 #include <Debug/headers/LogBufferManager.h>
 #include "QueueBase.h"
 
@@ -33,9 +34,8 @@ public:
           mask_(capacity_ - 1),
           name_(std::move(name)),
           buffer_(capacity_) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "LockFreeQueue", "Created " + name_ + " capacity " + std::to_string(capacity_),
-            debug::LogContext::Debug);
+        std::string log_message = "Created " + name_ + " capacity " + std::to_string(capacity_);
+        LOG_DBG("LockFreeQueue", log_message, debug::LogContext::Debug);
     }
 
     ~LockFreeQueue() override { shutdown(); }
