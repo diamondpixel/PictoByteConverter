@@ -13,8 +13,8 @@ FetchContent_MakeAvailable(Catch2)
 
 if (MSVC)
     # Add AddressSanitizer flags
-    add_compile_options("/fsanitize=address")
-    add_link_options("/fsanitize=address")
+    #add_compile_options("/fsanitize=address")
+    #add_link_options("/fsanitize=address")
 
 endif()
 

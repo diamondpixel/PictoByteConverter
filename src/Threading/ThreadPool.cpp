@@ -17,6 +17,7 @@
 
 #include "Debug/headers/LogBufferManager.h" // Assuming this is still used for general logging
 #include "Debug/headers/LogBuffer.h"      // Assuming this is still used for general logging
+#include "Queue/headers/WorkStealingDeque.h"
 
 ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string &pool_name, 
                        QueueType queue_type, const std::string &spill_path)
@@ -28,7 +29,6 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string 
       max_completed_tasks_history_(1000), // Default, can be configurable
       currently_active_tasks_(0)
       {
-
     // Create the appropriate queue type based on queue_type parameter
     switch (queue_type) {
         case QueueType::Spillable:
@@ -57,9 +57,14 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string 
                 debug::LogContext::Debug);
             break;
     }
+    // Create per-thread work-stealing deques
+    work_queues_.reserve(num_threads_);
+    for (size_t i = 0; i < num_threads_; ++i) {
+        work_queues_.push_back(std::make_shared<WorkStealingDeque<std::unique_ptr<Task>>>());
+    }
     // LAUNCH WORKER THREADS
     for (size_t i = 0; i < num_threads_; ++i) {
-        workers_.emplace_back(&ThreadPool::worker_thread, this);
+        workers_.emplace_back(&ThreadPool::worker_thread, this, i);
     }
 }
 
@@ -180,7 +185,7 @@ void ThreadPool::resize(size_t new_desired_count) {
         for (size_t i = 0; i < num_to_add; ++i) {
             // TODO: Consider re-adding ResourceManager check here if RM is active
             // if (ResourceManager::getInstance().getActiveThreadCount() >= max_system_threads) { break; }
-            workers_.emplace_back(&ThreadPool::worker_thread, this);
+            workers_.emplace_back(&ThreadPool::worker_thread, this, i);
             // active_thread_count_ is incremented by the thread itself upon starting
         }
         debug::LogBufferManager::getInstance().appendTo(
@@ -193,7 +198,7 @@ void ThreadPool::resize(size_t new_desired_count) {
     // num_threads_ (desired) is already updated.
 }
 
-void ThreadPool::worker_thread() {
+void ThreadPool::worker_thread(size_t index) {
     active_thread_count_++; // This thread is now active
     std::thread::id native_id = std::this_thread::get_id(); {
         ThreadMetrics current_thread_metrics_local(native_id, pool_name_);
@@ -233,102 +238,127 @@ void ThreadPool::worker_thread() {
         }
 
         std::unique_ptr<Task> taskPtr;
-        bool task_dequeued = tasks_->pop(taskPtr); // Blocking pop
 
-        if (shutdown_.load() && !task_dequeued) { // Pool is stopping and no more tasks
-            debug::LogBufferManager::getInstance().appendTo(
-                "ThreadPool",
-                "Worker thread [" + pool_name_ + "-" + short_id_str + "] detected shutdown and no more tasks. Exiting.",
-                debug::LogContext::Info);
-            break; // Exit worker loop
+        // 1. Try to pop from own queue fast-path
+        if (work_queues_[index]->pop_front(taskPtr)) {
+            // got task
+        } else {
+            // 2. Try to steal from others
+            size_t n = work_queues_.size();
+            bool stolen = false;
+            for (size_t offset = 1; offset < n && !stolen; ++offset) {
+                size_t victim = (index + offset) % n;
+                if (work_queues_[victim]->steal(taskPtr)) {
+                    stolen = true;
+                    break;
+                }
+            }
+
+            // 3. Fallback to global queue (may block)
+            if (!stolen) {
+                bool task_dequeued = tasks_->pop(taskPtr);
+                if (!task_dequeued) {
+                    // queue empty
+                }
+            }
         }
 
-        if (task_dequeued && taskPtr) {
-            Task& task = *taskPtr;
-            m_active_threads++; // Thread is now processing a task
-            
-            // Update wait duration before processing starts
-            task.updateWaitDuration();
-            
-            // Set the executing thread ID and start processing
-            task.setExecutingThreadId(native_id);
-            task.setProcessingStarted();
-
-            std::chrono::steady_clock::time_point task_start_steady = std::chrono::steady_clock::now();
-            std::string task_exception_msg;
-
-            try {
-                // Update ThreadMetrics: current task name and is_executing
-                {
-                    std::lock_guard<std::mutex> lock(thread_metrics_mutex_);
-                    auto it = thread_metrics_.find(native_id);
-                    if (it != thread_metrics_.end()) {
-                        it->second.is_executing = true;
-                        it->second.current_task_name = task.getTaskName();
-                        it->second.current_task_start_time = task.getStartProcessingTime();
-                    }
-                }
-
-                // Execute the task function
-                if (task.func) {
-                    task.func();
-                }
-
-                task.setProcessingEnded(TaskStatus::COMPLETED);
-
-            } catch (const std::exception &e) {
-                task_exception_msg = e.what();
-                task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
+        if (!taskPtr) {
+            // If pool shutting down and no task, exit
+            if (shutdown_.load()) {
                 debug::LogBufferManager::getInstance().appendTo(
                     "ThreadPool",
-                    "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
-                    "' (ID: " + task.getTaskId() + ") threw exception: " + task_exception_msg,
-                    debug::LogContext::Error);
-            } catch (...) {
-                task_exception_msg = "Unknown exception";
-                task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
-                debug::LogBufferManager::getInstance().appendTo(
-                    "ThreadPool",
-                    "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
-                    "' (ID: " + task.getTaskId() + ") threw an unknown exception.",
-                    debug::LogContext::Error);
+                    "Worker thread [" + pool_name_ + "-" + short_id_str + "] no task and shutting down.",
+                    debug::LogContext::Info);
+                break;
             }
-            record_task_completion(task);
-            m_tasks_processed++;
-            currently_active_tasks_.fetch_sub(1, std::memory_order_release); // Decrement after processing
+            continue; // loop again
+        }
 
-            // Update ThreadMetrics after task completion
+        Task& task = *taskPtr;
+        m_active_threads++; // Thread is now processing a task
+        
+        // Update wait duration before processing starts
+        task.updateWaitDuration();
+        
+        // Set the executing thread ID and start processing
+        task.setExecutingThreadId(native_id);
+        task.setProcessingStarted();
+
+        std::chrono::steady_clock::time_point task_start_steady = std::chrono::steady_clock::now();
+        std::string task_exception_msg;
+
+        try {
+            // Update ThreadMetrics: current task name and is_executing
             {
                 std::lock_guard<std::mutex> lock(thread_metrics_mutex_);
                 auto it = thread_metrics_.find(native_id);
                 if (it != thread_metrics_.end()) {
-                    it->second.tasks_completed++;
-                    it->second.total_execution_time_ns += task.getExecutionDurationNs();
-                    it->second.total_wait_time_ns += task.getWaitDurationNs();
-                    it->second.is_executing = false;
-                    it->second.current_task_name = "";
-                    it->second.last_active_time = std::chrono::system_clock::now();
-
-                    if (task.getExecutionDurationNs() > it->second.max_execution_time_ns.load(std::memory_order_relaxed)) {
-                        it->second.max_execution_time_ns.store(task.getExecutionDurationNs(), std::memory_order_release);
-                    }
-                    if (task.getExecutionDurationNs() < it->second.min_execution_time_ns.load(std::memory_order_relaxed)) {
-                        it->second.min_execution_time_ns.store(task.getExecutionDurationNs(), std::memory_order_release);
-                    }
-                    
-                    // Update min/max wait times for the thread
-                    uint64_t task_wait_ns = task.getWaitDurationNs();
-                    if (task_wait_ns > it->second.max_wait_time_ns.load(std::memory_order_relaxed)) {
-                        it->second.max_wait_time_ns.store(task_wait_ns, std::memory_order_release);
-                    }
-                    if (task_wait_ns < it->second.min_wait_time_ns.load(std::memory_order_relaxed)) {
-                        it->second.min_wait_time_ns.store(task_wait_ns, std::memory_order_release);
-                    }
+                    it->second.is_executing = true;
+                    it->second.current_task_name = task.getTaskName();
+                    it->second.current_task_start_time = task.getStartProcessingTime();
                 }
             }
-            m_active_threads--; // Thread is no longer processing this task
-            cv_all_tasks_done_.notify_all(); // Notify if anyone is waiting for all tasks to complete
+
+            // Execute the task function
+            if (task.func) {
+                task.func();
+            }
+
+            task.setProcessingEnded(TaskStatus::COMPLETED);
+
+        } catch (const std::exception &e) {
+            task_exception_msg = e.what();
+            task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
+            debug::LogBufferManager::getInstance().appendTo(
+                "ThreadPool",
+                "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
+                "' (ID: " + task.getTaskId() + ") threw exception: " + task_exception_msg,
+                debug::LogContext::Error);
+        } catch (...) {
+            task_exception_msg = "Unknown exception";
+            task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
+            debug::LogBufferManager::getInstance().appendTo(
+                "ThreadPool",
+                "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
+                "' (ID: " + task.getTaskId() + ") threw an unknown exception.",
+                debug::LogContext::Error);
         }
+        record_task_completion(task);
+        m_tasks_processed++;
+        currently_active_tasks_.fetch_sub(1, std::memory_order_release); // Decrement after processing
+
+        // Update ThreadMetrics after task completion
+        {
+            std::lock_guard<std::mutex> lock(thread_metrics_mutex_);
+            auto it = thread_metrics_.find(native_id);
+            if (it != thread_metrics_.end()) {
+                it->second.tasks_completed++;
+                it->second.total_execution_time_ns += task.getExecutionDurationNs();
+                it->second.total_wait_time_ns += task.getWaitDurationNs();
+                it->second.is_executing = false;
+                it->second.current_task_name = "";
+                it->second.last_active_time = std::chrono::system_clock::now();
+
+                if (task.getExecutionDurationNs() > it->second.max_execution_time_ns.load(std::memory_order_relaxed)) {
+                    it->second.max_execution_time_ns.store(task.getExecutionDurationNs(), std::memory_order_release);
+                }
+                if (task.getExecutionDurationNs() < it->second.min_execution_time_ns.load(std::memory_order_relaxed)) {
+                    it->second.min_execution_time_ns.store(task.getExecutionDurationNs(), std::memory_order_release);
+                }
+                
+                // Update min/max wait times for the thread
+                uint64_t task_wait_ns = task.getWaitDurationNs();
+                if (task_wait_ns > it->second.max_wait_time_ns.load(std::memory_order_relaxed)) {
+                    it->second.max_wait_time_ns.store(task_wait_ns, std::memory_order_release);
+                }
+                if (task_wait_ns < it->second.min_wait_time_ns.load(std::memory_order_relaxed)) {
+                    it->second.min_wait_time_ns.store(task_wait_ns, std::memory_order_release);
+                }
+            }
+        }
+        m_active_threads--; // Thread is no longer processing this task
+        cv_all_tasks_done_.notify_all(); // Notify if anyone is waiting for all tasks to complete
     } // End while(true)
 
     // Thread is exiting

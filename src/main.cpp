@@ -53,6 +53,7 @@ int main() {
     //    intentionally exceed the 50 MB memory limit so we can watch
     //    the queue spill to disk while the pool keeps working.
     // -------------------------------------------------------------
+    auto start_time = std::chrono::high_resolution_clock::now();
     const int num_tasks = 50;
     std::mt19937 rng{std::random_device{}()};
     std::uniform_int_distribution<int> dist(1700, 1700);
@@ -89,6 +90,10 @@ int main() {
     }
 
     pool.shutdown(true);
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    std::cout << "\nTotal processing time: " << duration.count() << " milliseconds\n";
 
     // -------------------------------------------------------------
     // 4. Process the results of all tasks

@@ -26,6 +26,7 @@
 #include <Queue/headers/ThreadSafeQueue.h> // Include ThreadSafeQueue implementation
 #include <Queue/headers/SpillableQueue.h> // Include SpillableQueue implementation
 #include <Queue/headers/QueueTypes.h> // Include QueueTypes enum
+#include <Queue/headers/WorkStealingDeque.h>
 #include <Tasks/headers/_Task.h> // Include Task class header
 
 struct ThreadMetrics {
@@ -250,7 +251,7 @@ private:
     /**
      * @brief The worker function executed by each thread in the pool.
      */
-    void worker_thread();
+    void worker_thread(size_t index);
 
     std::vector<std::thread> workers_;
     std::unique_ptr<QueueBase<std::unique_ptr<Task> > > tasks_; // Pointer-based task queue
@@ -291,6 +292,8 @@ private:
     // For storing the final state of all tasks, keyed by task_id
     std::unordered_map<uint64_t, std::shared_ptr<Task> > task_metrics_;
     std::mutex task_metrics_mutex_; // Protects task_metrics_ map
+
+    std::vector<std::shared_ptr<WorkStealingDeque<std::unique_ptr<Task>>>> work_queues_;
 
     // Helper to generate unique task IDs if not provided
     uint64_t generate_task_id() {
