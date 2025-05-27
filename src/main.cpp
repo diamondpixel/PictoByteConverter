@@ -25,14 +25,15 @@ int main() {
     // -------------------------------------------------------------
     // 0. Ensure required directories exist
     // -------------------------------------------------------------
-    std::filesystem::create_directories("./output");
-    std::filesystem::create_directories("./spill");
+    std::filesystem::create_directories("./output/");
+    std::filesystem::create_directories("./spill/");
 
     // -------------------------------------------------------------
     // 1. Configure system-wide resource limits via ResourceManager
     // -------------------------------------------------------------
     auto &rm = ResourceManager::getInstance();
-    rm.setMaxMemory(64 * 1024 * 1024);
+    size_t memory = 1024 * 1024 * 1024;
+    rm.setMaxMemory(memory * 16);
     std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
     gDebugMode = true;
 
@@ -41,7 +42,7 @@ int main() {
     //    All tasks submitted to this pool will therefore be subject
     //    to automatic in-memory vs. on-disk management.
     // -------------------------------------------------------------
-    ThreadPool pool(/*threads*/1,
+    ThreadPool pool(/*threads*/16,
                                /*queue_size (unused for Spillable)*/100,
                                /*pool name*/"ImagePool",
                                /*queue type*/QueueType::Spillable,
@@ -54,8 +55,7 @@ int main() {
     // -------------------------------------------------------------
     const int num_tasks = 50;
     std::mt19937 rng{std::random_device{}()};
-    //std::uniform_int_distribution<int> dist(5700, 5700);
-    std::uniform_int_distribution<int> dist(2700, 2700);
+    std::uniform_int_distribution<int> dist(1700, 1700);
 
     // Vector to store all the futures
     std::vector<std::future<void> > futures;
@@ -72,10 +72,11 @@ int main() {
         std::string task_id_str = std::to_string(task_id);
 
         // 1. Build the image task on the heap
+
         auto taskPtr = std::make_unique<ImageTaskInternal>(
                           filename,
-                          std::move(img),
-                          std::to_string(task_id));
+                          img,
+                          task_id_str);
 
         // 2. Attach the processing callable *inside the object*
         taskPtr->setFunction([raw = taskPtr.get()] {

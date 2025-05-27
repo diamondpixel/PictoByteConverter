@@ -167,8 +167,9 @@ struct ImageTaskInternal : Task {
     /**
      * Release heavy resources to reduce memory usage
      */
-    void releaseHeavyResources() override {
+    void releaseHeavyResources(const std::string &spill_path) override {
         image.clear();
+        setSpillFile(spill_path);
     }
 
     /**

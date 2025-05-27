@@ -44,6 +44,8 @@ struct Task {
     uint64_t wait_duration_ns{0};
     uint64_t execution_duration_ns{0};
 
+    std::string spill_file_path_{}; // holds path to spilled data if any
+
     /**
      * @brief Default constructor for deserialization or default instantiation.
      * Initializes members to default values. task_id is empty, timestamp to 0,
@@ -84,9 +86,20 @@ struct Task {
     }
 
     /**
-     * @brief Allow derived tasks to drop large buffers when spilling to disk
+     * @brief Allow derived tasks to drop heavy buffers; store the spill file path.
+     * 
+     * @param spill_path The path to the spill file
      */
-    virtual void releaseHeavyResources() {}
+    virtual void releaseHeavyResources(const std::string &spill_path) {
+        spill_file_path_ = spill_path;
+    }
+
+    /**
+     * @brief Accessors for spill file
+     */
+    void setSpillFile(const std::string &p) { spill_file_path_ = p; }
+    [[nodiscard]] bool hasSpillFile() const { return !spill_file_path_.empty(); }
+    [[nodiscard]] const std::string &getSpillFile() const { return spill_file_path_; }
 
     /**
      * @brief Copy constructor (explicitly defined for clarity)
@@ -107,7 +120,8 @@ struct Task {
           start_processing_time(other.start_processing_time),
           end_processing_time(other.end_processing_time),
           wait_duration_ns(other.wait_duration_ns),
-          execution_duration_ns(other.execution_duration_ns) {
+          execution_duration_ns(other.execution_duration_ns),
+          spill_file_path_(other.spill_file_path_) {
     }
 
     /**
@@ -129,7 +143,8 @@ struct Task {
           start_processing_time(other.start_processing_time),
           end_processing_time(other.end_processing_time),
           wait_duration_ns(other.wait_duration_ns),
-          execution_duration_ns(other.execution_duration_ns) {
+          execution_duration_ns(other.execution_duration_ns),
+          spill_file_path_(std::move(other.spill_file_path_)) {
     }
 
     /**
@@ -151,6 +166,7 @@ struct Task {
             end_processing_time = other.end_processing_time;
             wait_duration_ns = other.wait_duration_ns;
             execution_duration_ns = other.execution_duration_ns;
+            spill_file_path_ = other.spill_file_path_;
         }
         return *this;
     }
@@ -174,6 +190,7 @@ struct Task {
             end_processing_time = other.end_processing_time;
             wait_duration_ns = other.wait_duration_ns;
             execution_duration_ns = other.execution_duration_ns;
+            spill_file_path_ = std::move(other.spill_file_path_);
         }
         return *this;
     }
@@ -234,6 +251,9 @@ struct Task {
 
         task_id.clear();
         task_id.shrink_to_fit();
+
+        spill_file_path_.clear();
+        spill_file_path_.shrink_to_fit();
     }
 
     /**
@@ -512,6 +532,8 @@ struct Task {
         os.write(reinterpret_cast<const char*>(&wait_duration_ns), sizeof(wait_duration_ns));
         os.write(reinterpret_cast<const char*>(&execution_duration_ns), sizeof(execution_duration_ns));
 
+        if (!write_string(os, spill_file_path_)) return false;
+
         return os.good();
     }
 
@@ -558,6 +580,8 @@ struct Task {
         if (is.gcount() != sizeof(wait_duration_ns)) return false;
         is.read(reinterpret_cast<char*>(&execution_duration_ns), sizeof(execution_duration_ns));
         if (is.gcount() != sizeof(execution_duration_ns)) return false;
+
+        if (!read_string(is, spill_file_path_)) return false;
 
         func = nullptr; // Ensure func is nullptr after deserialization
         return is.good();

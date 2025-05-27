@@ -205,7 +205,7 @@ void ResourceManager::setMaxThreads(size_t threads) {
 }
 
 void ResourceManager::setMaxMemory(size_t memory_bytes) {
-    max_memory_usage = (memory_bytes > 1024 * 1024) ? memory_bytes : 1024 * 1024; // Min 1MB
+    max_memory_usage = (memory_bytes > 1024 * 1024 * 64) ? memory_bytes : 1024 * 1024 * 64; // Min 1MB
     debugLog(std::format("ResourceManager: Max memory set to {:.2f} MB", memory_bytes / (1024.0 * 1024.0)));
 }
 

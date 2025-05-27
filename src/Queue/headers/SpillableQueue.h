@@ -131,13 +131,6 @@ public:
     size_t in_memory_size() const;
 
     /**
-     * @brief Get the number of spilled items
-     *
-     * @return Number of spilled items
-     */
-    [[nodiscard]] size_t spilled_size() const;
-
-    /**
      * @brief Get the memory usage of the queue
      *
      * @return The total memory usage of the queue in bytes
@@ -161,7 +154,6 @@ public:
 private:
     // Pointer-based queue stores the template type directly (T can be std::unique_ptr<Task>)
     std::queue<T> queue_;
-    std::queue<std::string> spilled_task_files_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::atomic<bool> shutdown_flag_;
@@ -170,7 +162,7 @@ private:
     // Memory management
     size_t current_queue_memory_usage_;
     
-    // Spill file management
+    // Spill file management (directory & counter still needed for serialization)
     std::string spill_directory_path_;
     uint64_t spill_file_id_counter_;
     std::string queue_name_;
