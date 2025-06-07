@@ -4,111 +4,86 @@
 #include <chrono>
 #include <filesystem>
 #include <future>
-#include <Debug/headers/Debug.h>
 
 #include "Threading/headers/ThreadPool.h"
 #include "Threading/headers/ResourceManager.h"
 #include "Image/headers/BitmapImage.h"
-#include "Tasks/headers/ImageTaskInternal.h"
 
-// Function to process an image task
-void processImageTask(ImageTaskInternal &task) {
-    // Persist the bitmap to disk (BMP)
-   task.image.save(task.filename);
-    // Clear memory after use
-    task.image.clear();
-}
+// Removed heavy ImageTaskInternal dependency; using lightweight lambdas.
 
 int main() {
-    using namespace std::chrono_literals;
+    using namespace std::chrono_literals; {
+        // -------------------------------------------------------------
+        // 0. Ensure required directories exist
+        // -------------------------------------------------------------
+        std::filesystem::create_directories("./output/");
+        std::filesystem::create_directories("./output/spill/");
 
-    // -------------------------------------------------------------
-    // 0. Ensure required directories exist
-    // -------------------------------------------------------------
-    std::filesystem::create_directories("./output/");
-    std::filesystem::create_directories("./spill/");
+        // -------------------------------------------------------------
+        // 1. Configure system-wide resource limits via ResourceManager
+        // -------------------------------------------------------------
+        auto &rm = ResourceManager::getInstance();
+        size_t memory = 1024 * 1024 * 1024;
+        rm.setMaxMemory(memory * 1);
+        std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
 
-    // -------------------------------------------------------------
-    // 1. Configure system-wide resource limits via ResourceManager
-    // -------------------------------------------------------------
-    auto &rm = ResourceManager::getInstance();
-    size_t memory = 1024 * 1024 * 1024;
-    rm.setMaxMemory(memory * 12);
-    std::cout << "Max RAM in Bytes: " << rm.getMaxMemory() << std::endl;
-    gDebugMode = true;
+        ThreadPool pool(7,
+                        100,
+                        "ImagePool",
+                        QueueType::LockFree);
 
-    // -------------------------------------------------------------
-    // 2. Create a ThreadPool that uses a SpillableQueue<Task>
-    //    All tasks submitted to this pool will therefore be subject
-    //    to automatic in-memory vs. on-disk management.
-    // -------------------------------------------------------------
-    ThreadPool pool(/*threads*/12,
-                               /*queue_size (unused for Spillable)*/100,
-                               /*pool name*/"ImagePool",
-                               /*queue type*/QueueType::Spillable,
-                               /*spill dir*/"./spill");
+        // -------------------------------------------------------------
+        // 3. Generate and submit a batch of image-processing tasks that
+        //    intentionally exceed the 50 MB memory limit so we can watch
+        //    the queue spill to disk while the pool keeps working.
+        // -------------------------------------------------------------
+        auto start_time = std::chrono::high_resolution_clock::now();
+        constexpr int num_tasks = 10; // generate 50 images asynchronously
+        std::mt19937 rng{std::random_device{}()};
+        std::uniform_int_distribution<int> dist(5700, 5700);
 
-    // -------------------------------------------------------------
-    // 3. Generate and submit a batch of image-processing tasks that
-    //    intentionally exceed the 50 MB memory limit so we can watch
-    //    the queue spill to disk while the pool keeps working.
-    // -------------------------------------------------------------
-    auto start_time = std::chrono::high_resolution_clock::now();
-    const int num_tasks = 50;
-    std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> dist(5700, 5700);
+        // Vector to store task futures
+        std::vector<std::future<void>> futures;
 
-    // Vector to store all the futures
-    std::vector<std::future<void> > futures;
+        for (int i = 0; i < num_tasks; ++i) {
+            int w = dist(rng);
+            int h = dist(rng);
+            std::string filename = std::format("output/image_{}.bmp", i);
 
-    for (int i = 0; i < num_tasks; ++i) {
-        // Create a moderately large RGB bitmap filled with random bytes
-        int w = dist(rng);
-        int h = dist(rng);
-        BitmapImage img(w, h);
-        img.draw_smiley_face();
+            // Submit a lightweight lambda that builds, draws and saves the image inside the worker thread.
+            futures.emplace_back(
+                pool.submit("build_save", 0, [w, h, filename]() {
+                    BitmapImage img(w, h);
+                    img.draw_smiley_face();
+                    auto o = img.save(filename);
+                    img.clear();
+                })
+            );
+        }
 
-        std::string filename = std::format("output/image_{}.bmp", i);
-        uint64_t task_id = rm.getNextTaskId();
-        std::string task_id_str = std::to_string(task_id);
+        pool.shutdown(true); // wait for workers to finish
 
-        // 1. Build the image task on the heap
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        std::cout << "\nTotal processing time: " << duration.count() << " milliseconds\n";
 
-        auto taskPtr = std::make_unique<ImageTaskInternal>(
-                          filename,
-                          img,
-                          task_id_str);
-
-        // 2. Attach the processing callable *inside the object*
-        taskPtr->setFunction([raw = taskPtr.get()] {
-                processImageTask(*raw);
-        });
-
-        // 3. Submit the whole object – all properties preserved
-        std::future<void> fut = pool.submit(std::move(taskPtr));
-        futures.push_back(std::move(fut));
-    }
-
-    pool.shutdown(true);
-
-    auto end_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    std::cout << "\nTotal processing time: " << duration.count() << " milliseconds\n";
-
-    // -------------------------------------------------------------
-    // 4. Process the results of all tasks
-    // -------------------------------------------------------------
-    std::cout << "\nChecking task completion status:\n";
-    for (size_t i = 0; i < futures.size(); ++i) {
-        try {
-            // Wait for the task to complete and get its result
-            futures[i].get();
-            std::cout << "Task " << i << ": Completed successfully\n";
-        } catch (const std::exception &e) {
-            // If an exception was thrown during task execution
-            std::cerr << "Task " << i << ": Failed with exception - " << e.what() << std::endl;
+        // -------------------------------------------------------------
+        // 4. Process the results of all tasks
+        // -------------------------------------------------------------
+        std::cout << "\nChecking task completion status:\n";
+        for (size_t i = 0; i < futures.size(); ++i) {
+            try {
+                // Wait for the task to complete and get its result
+                futures[i].get();
+                std::cout << "Task " << i << ": Completed successfully\n";
+            } catch (const std::exception &e) {
+                // If an exception was thrown during task execution
+                std::cerr << "Task " << i << ": Failed with exception - " << e.what() << std::endl;
+            }
         }
     }
+
+    debug::LogBufferManager::getInstance().shutdown();
 
     return 0;
 }

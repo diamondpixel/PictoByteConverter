@@ -21,7 +21,7 @@
 #include <limits> // For std::numeric_limits
 #include <memory> // For std::shared_ptr, std::make_shared
 #include <unordered_map> // Added for task_metrics_ map
-#include <Debug/headers/LogBufferManager.h>
+#include <Debug/headers/LogMacros.h> // Include LogMacros interface
 #include <Queue/headers/QueueBase.h> // Include QueueBase interface
 #include <Queue/headers/SpillableQueue.h> // Include SpillableQueue implementation
 #include <Queue/headers/LockFreeQueue.h>
@@ -29,6 +29,9 @@
 #include <Queue/headers/WorkStealingDeque.h>
 #include <Tasks/headers/_Task.h> // Include Task class header
 
+/**
+ * @brief Structure to hold metrics for a thread in the thread pool.
+ */
 struct ThreadMetrics {
     std::thread::id thread_id; // Native thread ID
     std::string pool_name; // Name of the pool this thread belongs to
@@ -50,16 +53,25 @@ struct ThreadMetrics {
     bool is_executing{false}; // True if the thread is currently executing a task
     std::chrono::system_clock::time_point current_task_start_time; // Start time of the current task
 
-    // Default constructor
+    /**
+     * @brief Default constructor.
+     */
     ThreadMetrics() = default;
 
-    // Constructor for initialization
+    /**
+     * @brief Constructor for initialization.
+     * @param id Thread ID.
+     * @param p_name Pool name.
+     */
     ThreadMetrics(std::thread::id id, std::string p_name)
         : thread_id(id), pool_name(std::move(p_name)), registration_time(std::chrono::system_clock::now()),
           last_active_time(registration_time) {
     }
 
-    // Copy constructor to handle atomic variables correctly
+    /**
+     * @brief Copy constructor to handle atomic variables correctly.
+     * @param other ThreadMetrics to copy from.
+     */
     ThreadMetrics(const ThreadMetrics &other)
         : thread_id(other.thread_id),
           pool_name(other.pool_name),
@@ -77,7 +89,11 @@ struct ThreadMetrics {
           current_task_start_time(other.current_task_start_time) {
     }
 
-    // Custom assignment operator to handle atomic variables
+    /**
+     * @brief Custom assignment operator to handle atomic variables.
+     * @param other ThreadMetrics to assign from.
+     * @return Reference to this ThreadMetrics.
+     */
     ThreadMetrics &operator=(const ThreadMetrics &other) {
         if (this != &other) {
             thread_id = other.thread_id;
@@ -99,12 +115,13 @@ struct ThreadMetrics {
     }
 };
 
-
+/**
+ * @brief ThreadPool manages a pool of worker threads for parallel task execution.
+ */
 class ThreadPool {
 public:
     /**
-     * @brief Constructs a ThreadPool.
-     *
+     * @brief Construct a ThreadPool with a given name, thread count, and queue size.
      * @param num_threads Number of threads to create. Defaults to the number of CPU cores if 0.
      * @param queue_size Maximum size of the task queue. Defaults to 100.
      * @param pool_name Name of the thread pool for logging and identification. Defaults to "ThreadPool".
@@ -121,29 +138,33 @@ public:
      */
     ~ThreadPool();
 
+    /**
+     * @brief Move constructor.
+     * @param other ThreadPool to move from.
+     */
     ThreadPool(ThreadPool &&other) noexcept;
 
+    /**
+     * @brief Move assignment operator.
+     * @param other ThreadPool to move from.
+     * @return Reference to this ThreadPool.
+     */
     ThreadPool &operator=(ThreadPool &&other) noexcept;
 
+    /**
+     * @brief Shut down the thread pool.
+     * @param wait_for_completion If true, wait for all tasks to finish before shutting down.
+     */
     void shutdown(bool wait_for_completion = true);
 
-    bool is_shutting_down() const;
-
-    std::future<void> shutdown_async();
-
-    size_t size() const;
-
-    size_t trueSize() const;
-
-    size_t queue_size() const;
-
-    void wait_for_tasks();
-
+    /**
+     * @brief Get the name of the thread pool.
+     * @return Name string.
+     */
     const std::string &name() const;
 
     /**
-     * @brief Submits a task to be executed by the thread pool and returns a future.
-     *
+     * @brief Submit a task to be executed by the thread pool and returns a future.
      * @tparam F Type of the function/callable.
      * @tparam Args Types of the arguments to the function.
      * @param task_name Name of the task for metrics and logging.
@@ -157,7 +178,7 @@ public:
         -> std::future<typename std::invoke_result<F, Args...>::type>;
 
     /**
-     * @brief Submits a task with a generated ID and default name, returns a future.
+     * @brief Submit a task with a generated ID and default name, returns a future.
      */
     template<typename F, typename... Args>
     auto submit(F &&f, Args &&... args)
@@ -165,42 +186,36 @@ public:
 
     /**
      * @brief Dynamically resizes the thread pool.
-     *
      * @param new_num_threads The new desired number of threads.
      */
     void resize(size_t new_num_threads);
 
     /**
      * @brief Gets the current number of threads in the pool.
-     *
      * @return The number of active and available threads.
      */
     size_t get_thread_count() const;
 
     /**
      * @brief Gets the desired number of threads for the pool (after a resize call).
-     *
      * @return The desired number of threads.
      */
     size_t get_desired_thread_count() const;
 
     /**
      * @brief Gets the current number of tasks waiting in the queue.
-     *
      * @return The number of tasks in the queue.
      */
     size_t get_queue_size() const;
 
     /**
      * @brief Prints performance metrics of the thread pool.
-     *
      * @param detailed If true, prints detailed metrics for each thread and task.
      */
     void print_performance_metrics(bool detailed = true) const;
 
     /**
      * @brief Gets the name of the thread pool.
-     *
      * @return The name of the pool.
      */
     std::string get_pool_name() const;
@@ -250,12 +265,13 @@ public:
 private:
     /**
      * @brief The worker function executed by each thread in the pool.
+     * @param index Index of the worker thread.
      */
     void worker_thread(size_t index);
 
-    std::vector<std::thread> workers_;
+    std::vector<std::thread> workers_; // Vector of worker threads
     std::unique_ptr<QueueBase<std::unique_ptr<Task> > > tasks_; // Pointer-based task queue
-    std::string pool_name_;
+    std::string pool_name_; // Name of the thread pool
 
     std::atomic<size_t> num_threads_; // Desired number of threads for the pool
     std::atomic<bool> shutdown_{false}; // Flag to signal threads to shut down
@@ -295,11 +311,18 @@ private:
 
     std::vector<std::shared_ptr<WorkStealingDeque<std::unique_ptr<Task>>>> work_queues_;
 
-    // Helper to generate unique task IDs if not provided
+    /**
+     * @brief Helper to generate unique task IDs if not provided.
+     * @return Unique task ID.
+     */
     uint64_t generate_task_id() {
         return next_task_id_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    /**
+     * @brief Record task completion to history.
+     * @param metrics Task metrics to record.
+     */
     void record_task_completion_to_history(Task metrics);
 
     // Explicitly deleted copy constructor and assignment operator
@@ -364,13 +387,11 @@ auto ThreadPool::submit(std::string task_name, uint64_t task_id, F &&f, Args &&.
     // Reject if task itself exceeds the global limit
     if (task_memory > max_memory) {
         // Task is too large, reject it immediately
-        debug::LogBufferManager::getInstance().appendTo(
-            "Threadpool", "Pool '" + pool_name_ + "' Task '" +
+        LOG_WARN(pool_name_, "Pool '" + pool_name_ + "' Task '" +
                           task.getTaskName() + "' (ID: " + task.getTaskId() +
                           "): Rejected due to memory limit. Task size: " +
                           std::to_string(task_memory) + " bytes, Limit: " +
-                          std::to_string(max_memory) + " bytes.",
-            debug::LogContext::Warning);
+                          std::to_string(max_memory) + " bytes.");
 
         // Set a std::exception_ptr in the future
         std::promise<return_type> promise;
@@ -380,11 +401,9 @@ auto ThreadPool::submit(std::string task_name, uint64_t task_id, F &&f, Args &&.
     }
 
     if (shutdown_.load(std::memory_order_acquire)) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "Threadpool", "Pool '" + pool_name_ + "' Task '" +
+        LOG_ERR(pool_name_, "Pool '" + pool_name_ + "' Task '" +
                           task.getTaskName() + "' (ID: " + task.getTaskId() +
-                          "): Attempted to submit to a shutdown pool.",
-            debug::LogContext::Error);
+                          "): Attempted to submit to a shutdown pool.");
         throw std::runtime_error("ThreadPool: submit called on a stopped ThreadPool");
     }
 
@@ -404,6 +423,10 @@ auto ThreadPool::submit(std::string task_name, uint64_t task_id, F &&f, Args &&.
     if (!push_success) {
         // If push failed, decrement the active tasks counter
         currently_active_tasks_.fetch_sub(1, std::memory_order_release);
+
+        std::string error_msg = "Failed to push task '" + task.getTaskName() + "' (ID: " + task.getTaskId() +
+                                ") to queue. Pool: " + pool_name_ + ". Queue may be full or shutting down.";
+        LOG_ERR(pool_name_, error_msg);
 
         // Create a promise and set an exception
         std::promise<return_type> promise;
@@ -425,6 +448,22 @@ auto ThreadPool::submit(F &&f, Args &&... args)
 template <typename TaskT, typename>
 std::future<void> ThreadPool::submit_task_object(std::unique_ptr<TaskT> task_obj) {
     using return_type = void;
+
+    if (!task_obj) {
+        LOG_ERR(pool_name_, "Attempted to submit a null task object.");
+        std::promise<return_type> promise;
+        promise.set_exception(std::make_exception_ptr(
+            std::invalid_argument("Submitted task object was null.")));
+        return promise.get_future();
+    }
+
+    if (shutdown_.load(std::memory_order_acquire)) {
+        LOG_WARN(pool_name_, "Submit_task_object called on a shutting/shut down pool.");
+        std::promise<return_type> promise;
+        promise.set_exception(std::make_exception_ptr(
+            std::runtime_error("ThreadPool: submit_task_object called on a stopped ThreadPool")));
+        return promise.get_future();
+    }
 
     // Check self_destruct first - if true, don't even create packaged_task
     if (task_obj->self_destruct) {
@@ -490,6 +529,9 @@ std::future<void> ThreadPool::submit_task_object(std::unique_ptr<TaskT> task_obj
     currently_active_tasks_.fetch_add(1, std::memory_order_release);
     if (!tasks_->push(std::move(task_obj))) {
         currently_active_tasks_.fetch_sub(1, std::memory_order_release);
+        std::string error_msg = "Failed to push task object (ID: " + task_obj->getTaskId() +
+                                ") to queue. Pool: " + pool_name_ + ". Queue may be full or shutting down.";
+        LOG_ERR(pool_name_, error_msg);
         std::promise<return_type> promise;
         promise.set_exception(std::make_exception_ptr(
             std::runtime_error("Failed to enqueue task")));

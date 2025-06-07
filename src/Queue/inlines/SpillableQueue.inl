@@ -29,19 +29,19 @@ SpillableQueue<T>::SpillableQueue(std::string spill_path, std::string queue_name
       spill_file_id_counter_(0),
       queue_name_(std::move(queue_name)) {
     std::string msg_ctor = "Creating SpillableQueue '" + queue_name_ + "'.";
-    LOG_DBG("SpillableQueue", msg_ctor, debug::LogContext::Debug);
+    LOG_DBG("SpillableQueue", msg_ctor);
 
     if (!spill_directory_path_.empty()) {
         try {
             if (!std::filesystem::exists(spill_directory_path_)) {
                 if (!std::filesystem::create_directories(spill_directory_path_)) {
                     std::string msg_create_dir_fail = "Failed to create spill directory: " + spill_directory_path_;
-                    LOG_ERR("SpillableQueue", msg_create_dir_fail, debug::LogContext::Error);
+                    LOG_ERR("SpillableQueue", msg_create_dir_fail);
                 }
             }
         } catch (const std::exception &e) {
             std::string msg_create_dir_exc = "Exception creating spill directory: " + std::string(e.what());
-            LOG_ERR("SpillableQueue", msg_create_dir_exc, debug::LogContext::Error);
+            LOG_ERR("SpillableQueue", msg_create_dir_exc);
         }
     }
 }
@@ -49,7 +49,7 @@ SpillableQueue<T>::SpillableQueue(std::string spill_path, std::string queue_name
 template<typename T>
 SpillableQueue<T>::~SpillableQueue() {
     std::string msg_dtor = "Destroying SpillableQueue '" + queue_name_ + "'";
-    LOG_DBG("SpillableQueue", msg_dtor, debug::LogContext::Debug);
+    LOG_DBG("SpillableQueue", msg_dtor);
 
     SpillableQueue<T>::shutdown();
 
@@ -134,12 +134,12 @@ bool SpillableQueue<T>::push(T &&item) {
     std::string msg_push_check = "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
                                  " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
                                  " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory());
-    LOG_DBG("SpillableQueue", msg_push_check, debug::LogContext::Debug);
+    LOG_DBG("SpillableQueue", msg_push_check);
     // Reject only if single item exceeds global max *and* spilling disabled; otherwise we'll spill immediately
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
         std::string msg_task_rejected = "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled";
-        LOG_WARN("SpillableQueue", msg_task_rejected, debug::LogContext::Warning);
+        LOG_WARN("SpillableQueue", msg_task_rejected);
         if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
             if (item) item.reset();
         }
@@ -169,7 +169,7 @@ bool SpillableQueue<T>::push(T &&item) {
 
         if (!file.is_open()) {
             std::string msg_spill_fail = "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_;
-            LOG_ERR("SpillableQueue", msg_spill_fail, debug::LogContext::Error);
+            LOG_ERR("SpillableQueue", msg_spill_fail);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
             wait_for_memory(item_memory_usage);
@@ -222,7 +222,7 @@ bool SpillableQueue<T>::push(T &&item) {
     if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
         std::string msg_waiting = "Queue '" + queue_name_ + "' waiting – would exceed max memory and spilling disabled.";
-        LOG_DBG("SpillableQueue", msg_waiting, debug::LogContext::Debug);
+        LOG_DBG("SpillableQueue", msg_waiting);
         cv_.wait(lock, [&]() {
             return shutdown_flag_.load() ||
                    (RM::getInstance().getCurrentMemoryUsage() + item_memory_usage <=
@@ -263,12 +263,12 @@ bool SpillableQueue<T>::try_push(T &&item) {
     std::string msg_push_check = "Queue '" + queue_name_ + "' push check: item_size=" + std::to_string(item_memory_usage) +
                                  " bytes, RM current=" + std::to_string(RM::getInstance().getCurrentMemoryUsage()) +
                                  " bytes, RM max=" + std::to_string(RM::getInstance().getMaxMemory());
-    LOG_DBG("SpillableQueue", msg_push_check, debug::LogContext::Debug);
+    LOG_DBG("SpillableQueue", msg_push_check);
     // Reject only if single item exceeds global max *and* spilling disabled
     if (item_memory_usage > RM::getInstance().getMaxMemory() &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
         std::string msg_task_rejected = "Task rejected: item " + std::to_string(item_memory_usage) + " bytes exceeds max memory and spilling disabled";
-        LOG_WARN("SpillableQueue", msg_task_rejected, debug::LogContext::Warning);
+        LOG_WARN("SpillableQueue", msg_task_rejected);
         if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
             if (item) item.reset();
         }
@@ -298,7 +298,7 @@ bool SpillableQueue<T>::try_push(T &&item) {
 
         if (!file.is_open()) {
             std::string msg_spill_fail = "Failed to open spill file: " + spill_filename + " for queue: " + queue_name_;
-            LOG_ERR("SpillableQueue", msg_spill_fail, debug::LogContext::Error);
+            LOG_ERR("SpillableQueue", msg_spill_fail);
             // Decrement counter as file creation failed before use
             spill_file_id_counter_--;
             wait_for_memory(item_memory_usage);
@@ -334,7 +334,7 @@ bool SpillableQueue<T>::try_push(T &&item) {
                 }
             }
 
-            file.close();
+            file.close(); // Close stream before removing file
             try {
                 if (std::filesystem::exists(spill_filename)) std::filesystem::remove(spill_filename);
             } catch (...) {}
@@ -342,15 +342,11 @@ bool SpillableQueue<T>::try_push(T &&item) {
         }
     }
 
-    // If adding this item would breach the global memory cap and we cannot
-    // (or are not allowed to) spill, block until memory is freed instead of
-    // returning false.  This prevents the ThreadPool from seeing a push
-    // failure and breaking the associated promise.
     if ((RM::getInstance().getCurrentMemoryUsage() + item_memory_usage > RM::getInstance().getMaxMemory()) &&
         (spill_directory_path_.empty() || !enable_spilling_)) {
         // Non-blocking: if would exceed and can't spill, just return false
         std::string msg_waiting_would_exceed = "Queue '" + queue_name_ + "' try_push failed – would exceed max memory and spilling disabled.";
-        LOG_DBG("SpillableQueue", msg_waiting_would_exceed, debug::LogContext::Debug);
+        LOG_DBG("SpillableQueue", msg_waiting_would_exceed);
         return false;
     }
 
@@ -363,66 +359,80 @@ bool SpillableQueue<T>::try_push(T &&item) {
 
 template<typename T>
 bool SpillableQueue<T>::pop(T &item) {
+    // ----- Phase 1: wait for an element and remove it from the queue -----
     std::unique_lock<std::mutex> lock(mutex_);
 
-    // Wait until queue has items or is shutting down
     cv_.wait(lock, [this] {
         return !queue_.empty() || shutdown_flag_;
     });
 
     if (queue_.empty()) {
-        return false; // Queue is empty and shutting down
+        return false; // Queue shut down and empty
     }
 
-    if (!queue_.empty()) {
-        auto task_ptr = std::move(queue_.front());
-        queue_.pop();
+    // Move the front element out of the queue so we can release the lock early
+    item = std::move(queue_.front());
+    queue_.pop();
 
-        // Copy the task to the output parameter
-        item = std::move(task_ptr);
-
-        // If task was spilled, reload data
-        if (item && item->hasSpillFile()) {
-            std::string filename = item->getSpillFile();
-            // Preserve the original callable (e.g. packaged_task) before deserialization wipes it
-            auto saved_func = std::move(item->func);
-            lock.unlock();
-            {
-                std::ifstream file(filename, std::ios::binary);
-                if (file) {
-                    item->deserialize(file);
-                    file.close();
-                    try { if (std::filesystem::exists(filename)) std::filesystem::remove(filename); } catch (...) {}
-                }
-            }
-            lock.lock();
-            // Restore the callable so the promise inside packaged_task can still be fulfilled
-            if (!item->func && saved_func) {
-                item->func = std::move(saved_func);
-            }
-            item->setSpillFile("");
+    // Tentatively deduct the memory of the light representation (we’ll correct later if we reload)
+    size_t light_mem = 0;
+    if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+        light_mem = item ? item->getMemoryUsage() : 0;
+    } else {
+        light_mem = sizeof(T);
+        if constexpr (requires(T t) { t.getMemoryUsage(); }) {
+            light_mem += item.getMemoryUsage();
         }
+    }
+    current_queue_memory_usage_ -= light_mem;
 
-        // Destroy the task
-        task_ptr.reset(); // unique_ptr destructor
+    // Unlock to allow other push/pop operations while we potentially touch disk
+    lock.unlock();
 
-        // Update memory usage
-        size_t item_mem_usage = 0;
-        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> || std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
-            item_mem_usage = item ? item->getMemoryUsage() : 0;
-        } else {
-            item_mem_usage = sizeof(T);
-            if constexpr (requires(T t) { t.getMemoryUsage(); }) {
-                item_mem_usage += item.getMemoryUsage();
+    // ----- Phase 2: If the task was spilled, reload its heavy resources outside the lock -----
+    if (item && item->hasSpillFile()) {
+        // Preserve the callable so we can restore it after deserialization
+        auto saved_func = std::move(item->func);
+
+        std::string spillFileUtf8 = item->getSpillFile(); // local copy
+#ifdef _WIN32
+        // Convert to wide path once and hold on stack to avoid buffer lifetime issues
+        std::wstring widePath = std::filesystem::path(spillFileUtf8).wstring();
+#endif
+
+        {
+#ifdef _WIN32
+            std::ifstream file_stream(widePath, std::ios::binary);
+#else
+            std::ifstream file_stream(spillFileUtf8, std::ios::binary);
+#endif
+            if (file_stream) {
+                item->deserialize(file_stream);
             }
         }
-        current_queue_memory_usage_ -= item_mem_usage;
-        // Notify potential producer threads waiting for memory
-        cv_.notify_all();
-        return true;
+        // Attempt to delete the spill file – failure is non-fatal
+        {
+#ifdef _WIN32
+            std::error_code ec_rm;
+            std::filesystem::remove(widePath, ec_rm);
+#else
+            std::error_code ec_rm;
+            std::filesystem::remove(spillFileUtf8, ec_rm);
+#endif
+        }
+
+        if (!item->func && saved_func) {
+            item->func = std::move(saved_func);
+        }
+        item->setSpillFile("");
     }
 
-    return false; // Should not reach here
+    // ----- Phase 3: notify potential producers that memory was freed -----
+    lock.lock();
+    cv_.notify_all();
+    lock.unlock();
+
+    return true;
 }
 
 template<typename T>
@@ -442,20 +452,35 @@ bool SpillableQueue<T>::try_pop(T &item) {
 
         // If task was spilled, reload data
         if (item && item->hasSpillFile()) {
-            std::string filename = item->getSpillFile();
-            // Preserve the original callable before deserialization
+            std::string spillFileUtf8 = item->getSpillFile(); // local copy
+#ifdef _WIN32
+            // Convert to wide path once and hold on stack to avoid buffer lifetime issues
+            std::wstring widePath = std::filesystem::path(spillFileUtf8).wstring();
+#endif
+
+            // Preserve the original callable before deserialization and unlock
             auto saved_func2 = std::move(item->func);
             lock.unlock();
             {
-                std::ifstream file(filename, std::ios::binary);
+#ifdef _WIN32
+                std::ifstream file(widePath, std::ios::binary);
+#else
+                std::ifstream file(spillFileUtf8, std::ios::binary);
+#endif
                 if (file) {
                     item->deserialize(file);
                     file.close();
-                    try { if (std::filesystem::exists(filename)) std::filesystem::remove(filename); } catch (...) {}
+#ifdef _WIN32
+                    std::error_code ec_rm;
+                    std::filesystem::remove(widePath, ec_rm);
+#else
+                    std::error_code ec_rm;
+                    std::filesystem::remove(spillFileUtf8, ec_rm);
+#endif
                 }
             }
             lock.lock();
-            if (!item->func && saved_func2) {
+            if (!item->func) {
                 item->func = std::move(saved_func2);
             }
             item->setSpillFile("");
@@ -494,7 +519,7 @@ void SpillableQueue<T>::shutdown() {
     // Log shutdown for debugging
     std::string msg_shutdown = "SpillableQueue '" + queue_name_ + "' shutting down. Items in memory: " +
         std::to_string(queue_.size());
-    LOG_DBG("SpillableQueue", msg_shutdown, debug::LogContext::Debug);
+    LOG_DBG("SpillableQueue", msg_shutdown);
 }
 
 template<typename T>
@@ -522,7 +547,47 @@ size_t SpillableQueue<T>::size() const {
 template<typename T>
 size_t SpillableQueue<T>::in_memory_size() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return queue_.size();
+    size_t spilled_count = 0;
+    const auto& cont = queue_._Get_container();
+    for (const auto& ptr : cont) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> ||
+                      std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            if (ptr && ptr->hasSpillFile()) {
+                ++spilled_count;
+            }
+        } else {
+            if constexpr (requires(const T &v) { v.hasSpillFile(); }) {
+                if (ptr.hasSpillFile()) {
+                    ++spilled_count;
+                }
+            }
+        }
+    }
+    return queue_.size() - spilled_count;
+}
+
+template<typename T>
+size_t SpillableQueue<T>::spilled_size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    size_t spilled_count = 0;
+    // Access the underlying container of std::queue (MSVC: _Get_container)
+    const auto& cont = queue_._Get_container();
+    for (const auto& ptr : cont) {
+        if constexpr (std::is_same_v<T, std::unique_ptr<Task>> ||
+                      std::is_same_v<T, std::unique_ptr<typename T::element_type>>) {
+            if (ptr && ptr->hasSpillFile()) {
+                ++spilled_count;
+            }
+        } else {
+            if constexpr (requires(const T &v) { v.hasSpillFile(); }) {
+                if (ptr.hasSpillFile()) {
+                    ++spilled_count;
+                }
+            }
+        }
+    }
+    return spilled_count;
 }
 
 template<typename T>

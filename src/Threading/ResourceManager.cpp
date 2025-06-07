@@ -1,8 +1,6 @@
 #include "headers/ResourceManager.h"
-#include <iostream>
-#include "../Debug/headers/LogBufferManager.h"
-#include "Debug/headers/LogBuffer.h"
-#include "Debug/headers/Debug.h"
+#include "Debug/headers/LogMacros.h"
+#include <sstream>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -24,7 +22,7 @@ ResourceManager::ResourceManager() : max_threads(1),
                                      max_memory_usage(1024 * 1024 * 1024) {
     // Initialize the pools vector with the right dimensions
     pools.resize(MAX_CATEGORIES);
-    for (auto& categoryBuckets : pools) {
+    for (auto &categoryBuckets: pools) {
         categoryBuckets.resize(NUM_SIZE_BUCKETS);
         for (size_t i = 0; i < NUM_SIZE_BUCKETS; ++i) {
             categoryBuckets[i] = std::make_unique<PoolBucket>();
@@ -37,7 +35,7 @@ ResourceManager::ResourceManager(size_t max_threads, size_t max_memory_usage) : 
     max_memory_usage(max_memory_usage) {
     // Initialize the pools vector with the right dimensions
     pools.resize(MAX_CATEGORIES);
-    for (auto& categoryBuckets : pools) {
+    for (auto &categoryBuckets: pools) {
         categoryBuckets.resize(NUM_SIZE_BUCKETS);
         for (size_t i = 0; i < NUM_SIZE_BUCKETS; ++i) {
             categoryBuckets[i] = std::make_unique<PoolBucket>();
@@ -65,9 +63,9 @@ ResourceManager::~ResourceManager() {
     // Free all memory in pools
     for (size_t cat = 0; cat < pools.size(); ++cat) {
         for (size_t bucket = 0; bucket < pools[cat].size(); ++bucket) {
-            auto& pool = pools[cat][bucket];
+            auto &pool = pools[cat][bucket];
             if (!pool) continue;
-            
+
             std::lock_guard<std::mutex> lock(pool->bucket_mutex);
             for (auto &block: pool->blocks) {
                 if (block.memory_ptr) {
@@ -142,15 +140,6 @@ size_t ResourceManager::getSizeForBucket(uint8_t bucket) const {
     return std::min(size, max_memory_usage);
 }
 
-std::pair<size_t, size_t> ResourceManager::getRecommendedThreadDistribution() const {
-    if (max_threads == 1 || max_threads == 2) {
-        return {1, 1};
-    }
-    size_t writer_threads = std::max<size_t>(1, static_cast<size_t>(std::ceil(max_threads * 0.25)));
-    size_t worker_threads = std::max<size_t>(1, max_threads - writer_threads);
-    return {writer_threads, worker_threads};
-}
-
 // Thread management methods
 void ResourceManager::registerThread(const std::string &pool_name) {
     std::lock_guard<std::mutex> lock_thread(thread_mutex);
@@ -165,7 +154,7 @@ void ResourceManager::registerThread(const std::string &pool_name) {
         peak_active_threads.store(current_active_threads, std::memory_order_relaxed);
     }
 
-    debugLog(std::format("Thread {} from pool '{}' registered. Active threads: {}",
+    LOG_DBG("ResourceManager", std::format("Thread {} from pool '{}' registered. Active threads: {}",
                          thread_id_to_string(thread_id), pool_name, active_threads.load()));
 }
 
@@ -178,7 +167,7 @@ void ResourceManager::unregisterThread() {
         active_threads--;
     }
 
-    debugLog(std::format("Thread {} unregistered. Active threads: {}",
+    LOG_DBG("ResourceManager", std::format("Thread {} unregistered. Active threads: {}",
                          thread_id_to_string(thread_id), active_threads.load()));
 
     if (active_threads == 0) {
@@ -201,12 +190,12 @@ size_t ResourceManager::getPeakActiveThreadCount() const {
 
 void ResourceManager::setMaxThreads(size_t threads) {
     max_threads = (threads > 0) ? threads : 1;
-    debugLog(std::format("ResourceManager: Max threads set to {}", threads));
+    LOG_DBG("ResourceManager", std::format("ResourceManager: Max threads set to {}", threads));
 }
 
 void ResourceManager::setMaxMemory(size_t memory_bytes) {
     max_memory_usage = (memory_bytes > 1024 * 1024 * 64) ? memory_bytes : 1024 * 1024 * 64; // Min 1MB
-    debugLog(std::format("ResourceManager: Max memory set to {:.2f} MB", memory_bytes / (1024.0 * 1024.0)));
+    LOG_DBG("ResourceManager", std::format("ResourceManager: Max memory set to {:.2f} MB", memory_bytes / (1024.0 * 1024.0)));
 }
 
 void ResourceManager::setDetailedTracking(bool enabled) {
@@ -254,21 +243,21 @@ void ResourceManager::printMemoryStatus() {
                                      formatMemorySize(max_memory_usage),
                                      num_allocations);
 
-    debugLog(status);
+    LOG_INF("ResourceManager", status);
 
     // Print category breakdowns
     for (size_t cat = 0; cat < static_cast<size_t>(MAX_CATEGORIES); ++cat) {
         auto cat_usage = memory_usage_by_category[cat].load();
         if (cat_usage > 0) {
-            debugLog(std::format("  {}: {}",
+            LOG_INF("ResourceManager", std::format("  {}: {}",
                                  categoryToString(static_cast<MemoryBlockCategory>(cat)),
                                  formatMemorySize(cat_usage)));
         }
     }
 
     // Print detailed report if enabled
-    if (detailed_tracking_enabled && !memory_allocations.empty() && getDebugMode()) {
-        debugLog("Detailed memory allocations:");
+    if (detailed_tracking_enabled && !memory_allocations.empty()) { 
+        LOG_DBG("ResourceManager", "Detailed memory allocations:");
 
         for (const auto &[id, info]: memory_allocations) {
             auto now = std::chrono::system_clock::now();
@@ -280,13 +269,13 @@ void ResourceManager::printMemoryStatus() {
                                              duration,
                                              categoryToString(info.category));
 
-            debugLog(detail);
+            LOG_DBG("ResourceManager", detail);
         }
     }
 }
 
 void ResourceManager::printPoolStatistics() {
-    debugLog("=== Memory Pool Statistics ===");
+    LOG_INF("ResourceManager", "=== Memory Pool Statistics ===");
 
     for (size_t cat = 0; cat < pools.size(); ++cat) {
         auto category = static_cast<MemoryBlockCategory>(cat);
@@ -307,7 +296,7 @@ void ResourceManager::printPoolStatistics() {
                 total_bytes += pool->current_blocks * block_size;
 
                 // Only show details for buckets with activity
-                debugLog(std::format("  {}, {}: {} blocks, {} hits, {} misses, hit rate: {:.1f}%",
+                LOG_INF("ResourceManager", std::format("  {}, {}: {} blocks, {} hits, {} misses, hit rate: {:.1f}%",
                                      categoryToString(category),
                                      formatMemorySize(block_size),
                                      pool->current_blocks,
@@ -320,7 +309,7 @@ void ResourceManager::printPoolStatistics() {
         }
 
         if (total_blocks > 0 || total_hits > 0 || total_misses > 0) {
-            debugLog(std::format("{} Total: {} blocks, {} bytes, {} hits, {} misses, hit rate: {:.1f}%",
+            LOG_INF("ResourceManager", std::format("{} Total: {} blocks, {} bytes, {} hits, {} misses, hit rate: {:.1f}%",
                                  categoryToString(category),
                                  total_blocks,
                                  formatMemorySize(total_bytes),
@@ -332,10 +321,10 @@ void ResourceManager::printPoolStatistics() {
         }
     }
 
-    debugLog("=============================");
+    LOG_INF("ResourceManager", "=============================");
 }
 
-ResourceManager::MemoryBlockId ResourceManager::getPooledMemory(size_t bytes, MemoryBlockCategory category) {
+memory::MemoryBlockId ResourceManager::getPooledMemory(size_t bytes, MemoryBlockCategory category) {
     // Find the appropriate size bucket for the requested size
     const uint8_t size_bucket = getSizeBucketForSize(bytes);
     size_t actual_size = getSizeForBucket(size_bucket);
@@ -369,7 +358,7 @@ ResourceManager::MemoryBlockId ResourceManager::getPooledMemory(size_t bytes, Me
             pool->hits++;
 
             // Log reuse
-            debugLog(std::format("Reused memory block: {} from {} pool",
+            LOG_DBG("ResourceManager", std::format("Reused memory block: {} from {} pool",
                                  formatMemorySize(actual_size),
                                  categoryToString(category)));
 
@@ -386,14 +375,14 @@ ResourceManager::MemoryBlockId ResourceManager::getPooledMemory(size_t bytes, Me
     });
 
     if (!success) {
-        debugLog(std::format("Memory allocation of {} timed out", formatMemorySize(actual_size)));
+        LOG_WARN("ResourceManager", std::format("Memory allocation of {} timed out", formatMemorySize(actual_size)));
         return {}; // Return invalid ID
     }
 
     // Allocate memory
     void *memory = malloc(actual_size);
     if (!memory) {
-        debugLog(std::format("Failed to allocate {} of memory", formatMemorySize(actual_size)));
+        LOG_ERR("ResourceManager", std::format("Failed to allocate {} of memory", formatMemorySize(actual_size)));
         return {}; // Return invalid ID
     }
 
@@ -454,7 +443,7 @@ ResourceManager::MemoryBlockId ResourceManager::getPooledMemory(size_t bytes, Me
                                formatMemorySize(current_memory_usage.load()),
                                memory_allocations.size());
 
-        debugLog(message);
+        LOG_DBG("ResourceManager", message);
     }
 
     return block_id;
@@ -481,7 +470,7 @@ bool ResourceManager::releasePooledMemory(MemoryBlockId block_id) {
     return true;
 }
 
-void* ResourceManager::getMemoryPtr(MemoryBlockId block_id) {
+void *ResourceManager::getMemoryPtr(MemoryBlockId block_id) {
     if (!block_id.isValid()) return nullptr;
 
     auto cat_index = static_cast<size_t>(block_id.category);
@@ -525,35 +514,35 @@ uint64_t ResourceManager::getNextTaskId() {
 void ResourceManager::printThreadPerformanceReport(bool detailed) const {
     std::lock_guard<std::mutex> lock(pool_metrics_mutex);
 
-    debugLog("=== Thread Performance Report ===");
+    LOG_INF("ResourceManager", "=== Thread Performance Report ===");
 
-    for (const auto& [name, metrics] : pool_metrics) {
-        debugLog(std::format("Pool '{}':", name));
-        debugLog(std::format("  Threads used: {}", metrics.thread_count));
-        debugLog(std::format("  Tasks completed: {}", metrics.total_tasks_completed));
-        debugLog(std::format("  Total exec time: {}", formatDuration(metrics.total_execution_time_ns)));
-        debugLog(std::format("  Avg exec time: {}", formatDuration(metrics.avg_execution_time_ns)));
-        debugLog(std::format("  Max exec time: {}", formatDuration(metrics.max_execution_time_ns)));
-        debugLog(std::format("  Min exec time: {}", formatDuration(metrics.min_execution_time_ns)));
+    for (const auto &[name, metrics]: pool_metrics) {
+        LOG_INF("ResourceManager", std::format("Pool '{}':", name));
+        LOG_INF("ResourceManager", std::format("  Threads used: {}", metrics.thread_count));
+        LOG_INF("ResourceManager", std::format("  Tasks completed: {}", metrics.total_tasks_completed));
+        LOG_INF("ResourceManager", std::format("  Total exec time: {}", formatDuration(metrics.total_execution_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Avg exec time: {}", formatDuration(metrics.avg_execution_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Max exec time: {}", formatDuration(metrics.max_execution_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Min exec time: {}", formatDuration(metrics.min_execution_time_ns)));
 
-        debugLog(std::format("  Total wait time: {}", formatDuration(metrics.total_wait_time_ns)));
-        debugLog(std::format("  Avg wait time: {}", formatDuration(metrics.avg_wait_time_ns)));
-        debugLog(std::format("  Max wait time: {}", formatDuration(metrics.max_wait_time_ns)));
-        debugLog(std::format("  Min wait time: {}", formatDuration(metrics.min_wait_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Total wait time: {}", formatDuration(metrics.total_wait_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Avg wait time: {}", formatDuration(metrics.avg_wait_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Max wait time: {}", formatDuration(metrics.max_wait_time_ns)));
+        LOG_INF("ResourceManager", std::format("  Min wait time: {}", formatDuration(metrics.min_wait_time_ns)));
 
         if (detailed) {
-            debugLog("  [Detailed reporting available]");
+            LOG_INF("ResourceManager", "  [Detailed reporting available]");
         }
     }
 
-    debugLog("==================================");
+    LOG_INF("ResourceManager", "==================================");
 }
 
-void ResourceManager::updateThreadMetrics(const std::string& pool_name,
+void ResourceManager::updateThreadMetrics(const std::string &pool_name,
                                           uint64_t exec_time_ns,
                                           uint64_t wait_time_ns) {
     std::lock_guard<std::mutex> lock(pool_metrics_mutex);
-    auto& metrics = pool_metrics[pool_name];
+    auto &metrics = pool_metrics[pool_name];
     metrics.pool_name = pool_name;
     metrics.thread_count++;
     metrics.total_tasks_completed++;
@@ -570,31 +559,26 @@ void ResourceManager::updateThreadMetrics(const std::string& pool_name,
     metrics.min_wait_time_ns = std::min(metrics.min_wait_time_ns, wait_time_ns);
 }
 
-// Manual memory accounting helpers
-void ResourceManager::increaseMemory(size_t bytes) {
-    if (bytes == 0) return;
-    size_t new_val = current_memory_usage.fetch_add(bytes) + bytes;
-    // update peak
-    size_t prev_peak = peak_memory_usage.load();
-    while (new_val > prev_peak && !peak_memory_usage.compare_exchange_weak(prev_peak, new_val)) {}
-}
+memory::MemoryBlockId ResourceManager::doMemcpy(MemoryBlockId dest_id, MemoryBlockId src_id, size_t size) {
+    void* src = getMemoryPtr(src_id);
+    if (!src) throw std::runtime_error("Invalid source buffer ID");
 
-void ResourceManager::decreaseMemory(size_t bytes) {
-    if (bytes == 0) return;
-    current_memory_usage.fetch_sub(bytes);
-}
-
-// Definition of the debugLog method
-void ResourceManager::debugLog(const std::string &message) {
-    // Check the thread-local flag from LogBufferManager
-    if (debug::LogBufferManager::tls_inside_resource_manager_log_append) {
-        return; // Avoid recursive logging if we're already in a ResourceManager log append operation
+    // Ensure destination buffer is large enough
+    size_t dest_size = getMemorySize(dest_id);
+    if (dest_size < size) {
+        // Allocate new buffer large enough
+        MemoryBlockId new_dest = getPooledMemory(size, MemoryBlockCategory::BUFFER);
+        void* new_ptr = getMemoryPtr(new_dest);
+        if (!new_ptr) throw std::runtime_error("Failed to allocate new destination buffer");
+        if (dest_id.isValid()) {
+            releasePooledMemory(dest_id);
+        }
+        dest_id = new_dest;
     }
 
-    if (getDebugMode()) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "ResourceManager",
-            message,
-            debug::LogContext::Debug);
-    }
+    void* dest_ptr = getMemoryPtr(dest_id);
+    std::memcpy(dest_ptr, src, size);
+    total_memcpy_bytes.fetch_add(size);
+
+    return dest_id;
 }

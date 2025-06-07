@@ -15,9 +15,7 @@
 #include <utility>
 #include <ranges>
 
-#include "Debug/headers/LogBufferManager.h" // Assuming this is still used for general logging
 #include "Debug/headers/LogMacros.h"
-#include "Debug/headers/LogBuffer.h"      // Assuming this is still used for general logging
 #include "Queue/headers/WorkStealingDeque.h"
 
 ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string &pool_name, 
@@ -32,24 +30,28 @@ ThreadPool::ThreadPool(size_t num_threads, size_t queue_size, const std::string 
       {
     // Create the appropriate queue type based on queue_type parameter
     switch (queue_type) {
-        case QueueType::Spillable:
+        case QueueType::Spillable: {
             // Create SpillableQueue
             tasks_ = std::make_unique<SpillableQueue<std::unique_ptr<Task>>>(
                 spill_path.empty() ? "" : spill_path, 
                 pool_name
             );
             
-            LOG_DBG("ThreadPool", "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
-                + " threads. Using SpillableQueue with spill path: " + (spill_path.empty() ? "disabled" : spill_path));
-
+            std::string msg_init_spillable = "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
+                + " threads. Using SpillableQueue with spill path: " + (spill_path.empty() ? "disabled" : spill_path);
+            LOG_DBG("ThreadPool", msg_init_spillable);
+            break;
+        }
+        
         case QueueType::LockFree:
-        default:
+        default: {
             // Default: Create LockFreeQueue (bounded)
             tasks_ = std::make_unique<LockFreeQueue<std::unique_ptr<Task>>>(queue_size, pool_name);
             
-            LOG_DBG("ThreadPool", "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
-                + " threads. Using LockFreeQueue with max size: " + std::to_string(queue_size));
-            break;
+            std::string msg_init_lockfree = "Initializing ThreadPool '" + pool_name_ + "' with desired " + std::to_string(num_threads_.load())
+                + " threads. Using LockFreeQueue with max size: " + std::to_string(queue_size);
+            LOG_DBG("ThreadPool", msg_init_lockfree);
+            break; }
     }
     // Create per-thread work-stealing deques
     work_queues_.reserve(num_threads_);
@@ -76,10 +78,8 @@ void ThreadPool::shutdown(bool wait_for_completion) {
         }
         return;
     }
-    debug::LogBufferManager::getInstance().appendTo(
-        "ThreadPool",
-        "Stopping ThreadPool '" + pool_name_ + "'. Wait for completion: " + (wait_for_completion ? "true" : "false"),
-        debug::LogContext::Info);
+    std::string msg_shutdown_start = "Stopping ThreadPool '" + pool_name_ + "'. Wait for completion: " + (wait_for_completion ? "true" : "false");
+    LOG_INF("ThreadPool", msg_shutdown_start);
 
     if (wait_for_completion) {
         std::unique_lock<std::mutex> lock(pool_mutex_);
@@ -102,11 +102,9 @@ void ThreadPool::shutdown(bool wait_for_completion) {
         }
     }
     // active_thread_count_ should be 0 if all threads exited cleanly.
-    debug::LogBufferManager::getInstance().appendTo(
-        "ThreadPool",
-        "ThreadPool '" + pool_name_ + "' fully stopped. Active threads final: " + std::to_string(
-            active_thread_count_.load()),
-        debug::LogContext::Info);
+    std::string msg_shutdown_end = "ThreadPool '" + pool_name_ + "' fully stopped. Active threads final: " + std::to_string(
+            active_thread_count_.load());
+    LOG_INF("ThreadPool", msg_shutdown_end);
 
     // Clear metrics on full shutdown
     std::lock_guard<std::mutex> lock_tm(thread_metrics_mutex_);
@@ -117,18 +115,14 @@ void ThreadPool::shutdown(bool wait_for_completion) {
 
 void ThreadPool::resize(size_t new_desired_count) {
     if (shutdown_.load()) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "ThreadPool",
-            "Pool '" + pool_name_ + "': Cannot resize, pool is shutting down.",
-            debug::LogContext::Warning);
+        std::string msg_resize_shutting_down = "Pool '" + pool_name_ + "': Cannot resize, pool is shutting down.";
+        LOG_WARN("ThreadPool", msg_resize_shutting_down);
         return;
     }
 
     if (new_desired_count == 0) {
-        debug::LogBufferManager::getInstance().appendTo(
-            "ThreadPool",
-            "Pool '" + pool_name_ + "': Cannot resize to 0 threads. Minimum is 1. Use stop() to shut down.",
-            debug::LogContext::Warning);
+        std::string msg_resize_zero = "Pool '" + pool_name_ + "': Cannot resize to 0 threads. Minimum is 1. Use stop() to shut down.";
+        LOG_WARN("ThreadPool", msg_resize_zero);
         return; // Or set to 1, depending on desired strictness
     }
 
@@ -145,33 +139,21 @@ void ThreadPool::resize(size_t new_desired_count) {
     current_actual_threads = workers_.size(); // Let's use workers_.size() as the basis for adding/removing from vector
 
 
-    debug::LogBufferManager::getInstance().appendTo(
-        "ThreadPool",
-        "Resizing pool '" + pool_name_ + "' from " + std::to_string(old_desired_count) +
+    std::string msg_resizing = "Resizing pool '" + pool_name_ + "' from " + std::to_string(old_desired_count) +
         " (current actual in vector: " + std::to_string(current_actual_threads) + ") to " +
-        std::to_string(new_desired_count) + " desired threads.",
-        debug::LogContext::Info);
+        std::to_string(new_desired_count) + " desired threads.";
+    LOG_INF("ThreadPool", msg_resizing);
 
     if (new_desired_count < current_actual_threads) {
         // Downscaling: Request threads to shut down using FOS
         size_t num_to_shed = current_actual_threads - new_desired_count;
         shutdown_slots_to_claim_.fetch_add(num_to_shed, std::memory_order_release); // Add to existing, if any
 
-        debug::LogBufferManager::getInstance().appendTo(
-            "ThreadPool",
-            "Pool '" + pool_name_ + "': Downscaling. Requesting " + std::to_string(num_to_shed) +
+        std::string msg_downscaling = "Pool '" + pool_name_ + "': Downscaling. Requesting " + std::to_string(num_to_shed) +
             " threads to claim shutdown slots. Total slots to claim now: " + std::to_string(
-                shutdown_slots_to_claim_.load()),
-            debug::LogContext::Info);
-
-        // Notify worker threads to check for FOS.
-        // tasks_.done() will wake them. They will check FOS before attempting to pop.
-        // This is a bit of a strong signal if the queue isn't meant to be permanently done.
-        // A direct notify_all on the queue's CV without setting 'done' would be more precise.
-        tasks_->shutdown(); // Wake up all threads waiting on the queue's condition variable.
-        // This will also prevent new tasks from being popped if queue becomes empty.
-        // This might be an issue if resize is called without intending to stop new tasks.
-        // For now, this is the simplest way to wake them.
+                shutdown_slots_to_claim_.load());
+        LOG_INF("ThreadPool", msg_downscaling);
+        tasks_->shutdown();
     } else if (new_desired_count > current_actual_threads) {
         // Upscaling: Add new threads
         size_t num_to_add = new_desired_count - current_actual_threads;
@@ -182,11 +164,9 @@ void ThreadPool::resize(size_t new_desired_count) {
             workers_.emplace_back(&ThreadPool::worker_thread, this, i);
             // active_thread_count_ is incremented by the thread itself upon starting
         }
-        debug::LogBufferManager::getInstance().appendTo(
-            "ThreadPool",
-            "Pool '" + pool_name_ + "': Upscaling. Added " + std::to_string(num_to_add) +
-            " threads. New worker vector size: " + std::to_string(workers_.size()),
-            debug::LogContext::Info);
+        std::string msg_upscaling = "Pool '" + pool_name_ + "': Upscaling. Added " + std::to_string(num_to_add) +
+            " threads. New worker vector size: " + std::to_string(workers_.size());
+        LOG_INF("ThreadPool", msg_upscaling);
     }
     // If new_desired_count == current_actual_threads, no change to worker vector needed.
     // num_threads_ (desired) is already updated.
@@ -203,11 +183,9 @@ void ThreadPool::worker_thread(size_t index) {
     std::hash<std::thread::id> hasher;
     std::string short_id_str = std::to_string(hasher(native_id) % 100000);
 
-    debug::LogBufferManager::getInstance().appendTo(
-        "ThreadPool",
-        "Worker thread [" + pool_name_ + "-" + short_id_str + "] started. Native ID: " +
-        std::to_string(hasher(native_id)) + ". Total active: " + std::to_string(active_thread_count_.load()),
-        debug::LogContext::Debug);
+    std::string msg_thread_start = "Worker thread [" + pool_name_ + "-" + short_id_str + "] started. Native ID: " +
+        std::to_string(hasher(native_id)) + ". Total active: " + std::to_string(active_thread_count_.load());
+    LOG_DBG("ThreadPool", msg_thread_start);
 
     while (true) {
         // Check for forced shutdown slot before trying to get a task
@@ -223,10 +201,8 @@ void ThreadPool::worker_thread(size_t index) {
             }
 
             if (claimed_slot) {
-                debug::LogBufferManager::getInstance().appendTo(
-                    "ThreadPool",
-                    "Worker thread [" + pool_name_ + "-" + short_id_str + "] claiming a shutdown slot. Exiting.",
-                    debug::LogContext::Info);
+                std::string msg_thread_shutdown = "Worker thread [" + pool_name_ + "-" + short_id_str + "] claiming a shutdown slot. Exiting.";
+                LOG_INF("ThreadPool", msg_thread_shutdown);
                 break; // Exit worker loop
             }
         }
@@ -260,10 +236,8 @@ void ThreadPool::worker_thread(size_t index) {
         if (!taskPtr) {
             // If pool shutting down and no task, exit
             if (shutdown_.load()) {
-                debug::LogBufferManager::getInstance().appendTo(
-                    "ThreadPool",
-                    "Worker thread [" + pool_name_ + "-" + short_id_str + "] no task and shutting down.",
-                    debug::LogContext::Info);
+                std::string msg_thread_no_task = "Worker thread [" + pool_name_ + "-" + short_id_str + "] no task and shutting down.";
+                LOG_INF("ThreadPool", msg_thread_no_task);
                 break;
             }
             continue; // loop again
@@ -304,19 +278,15 @@ void ThreadPool::worker_thread(size_t index) {
         } catch (const std::exception &e) {
             task_exception_msg = e.what();
             task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
-            debug::LogBufferManager::getInstance().appendTo(
-                "ThreadPool",
-                "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
-                "' (ID: " + task.getTaskId() + ") threw exception: " + task_exception_msg,
-                debug::LogContext::Error);
+            std::string msg_task_exception = "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
+                "' (ID: " + task.getTaskId() + ") threw exception: " + task_exception_msg;
+            LOG_ERR("ThreadPool", msg_task_exception);
         } catch (...) {
             task_exception_msg = "Unknown exception";
             task.setProcessingEnded(TaskStatus::FAILED, task_exception_msg);
-            debug::LogBufferManager::getInstance().appendTo(
-                "ThreadPool",
-                "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
-                "' (ID: " + task.getTaskId() + ") threw an unknown exception.",
-                debug::LogContext::Error);
+            std::string msg_task_unknown_exception = "Worker thread [" + pool_name_ + "-" + short_id_str + "] task '" + task.getTaskName() +
+                "' (ID: " + task.getTaskId() + ") threw an unknown exception.";
+            LOG_ERR("ThreadPool", msg_task_unknown_exception);
         }
         record_task_completion(task);
         m_tasks_processed++;
@@ -368,11 +338,9 @@ void ThreadPool::worker_thread(size_t index) {
          }
     }
 
-    debug::LogBufferManager::getInstance().appendTo(
-        "ThreadPool",
-        "Worker thread [" + pool_name_ + "-" + short_id_str + "] finished. Native ID: " +
-        std::to_string(hasher(native_id)) + ". Total active: " + std::to_string(active_thread_count_.load()),
-        debug::LogContext::Debug);
+    std::string msg_thread_finish = "Worker thread [" + pool_name_ + "-" + short_id_str + "] finished. Native ID: " +
+        std::to_string(hasher(native_id)) + ". Total active: " + std::to_string(active_thread_count_.load());
+    LOG_DBG("ThreadPool", msg_thread_finish);
 }
 
 size_t ThreadPool::get_thread_count() const {
@@ -385,14 +353,6 @@ size_t ThreadPool::get_desired_thread_count() const {
 
 size_t ThreadPool::get_queue_size() const {
     return tasks_->size();
-}
-
-size_t ThreadPool::size() const { // Alias for get_thread_count (actual running threads)
-    return get_thread_count();
-}
-
-size_t ThreadPool::trueSize() const { // Alias for get_desired_thread_count
-    return get_desired_thread_count();
 }
 
 std::string ThreadPool::get_pool_name() const {
@@ -436,14 +396,9 @@ void ThreadPool::record_task_completion(Task metrics) {
         if (metrics.getMemoryUsage() == 0 && hist_it->getMemoryUsage() > 0) {
             // No direct setter for memory usage in Task, but it's tracked by the virtual getMemoryUsage method
         }
-        *hist_it = metrics; // Update existing record (likely was PENDING)
+        *hist_it = metrics;
     } else {
-        // If not found (should be rare if submit added it), add it now.
-        // Or, if m_completed_task_metrics is strictly for *final* states, then submit shouldn't add to it.
-        // For now, let's assume we update if found, add if not, to ensure it's there.
         if (m_completed_task_metrics.size() >= max_completed_tasks_history_) {
-            // Eviction logic if m_completed_task_metrics is a deque and needs capping, e.g. pop_front()
-            // Consider memory usage when deciding which tasks to evict
             if (!m_completed_task_metrics.empty()) {
                 m_completed_task_metrics.erase(m_completed_task_metrics.begin());
             }
@@ -538,7 +493,7 @@ void ThreadPool::print_performance_metrics(bool detailed) const {
         std::vector<Task> task_history = get_completed_task_metrics(); // Uses its own mutex
         
         // Sort by completion time, most recent first
-        std::sort(task_history.begin(), task_history.end(), [](const Task& a, const Task& b) {
+        std::ranges::sort(task_history, [](const Task& a, const Task& b) {
             return a.getEndProcessingTime() > b.getEndProcessingTime();
         });
 
@@ -587,7 +542,7 @@ void ThreadPool::print_performance_metrics(bool detailed) const {
         size_t to_show = std::min(task_history.size(), size_t(3));
         if (to_show > 0) {
             // Sort by completion time, most recent first
-            std::sort(task_history.begin(), task_history.end(), [](const Task& a, const Task& b) {
+            std::ranges::sort(task_history, [](const Task& a, const Task& b) {
                 return a.getEndProcessingTime() > b.getEndProcessingTime();
             });
 
@@ -622,5 +577,5 @@ void ThreadPool::print_performance_metrics(bool detailed) const {
 
     oss << "--- End of Report ---";
     // Output to console (or log buffer)
-    debug::LogBufferManager::getInstance().appendTo("ThreadPoolStats", oss.str(), debug::LogContext::Info);
+    LOG_INF("ResourceManager", oss.str());
 }

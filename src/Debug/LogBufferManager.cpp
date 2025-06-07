@@ -13,6 +13,14 @@ namespace debug {
 struct LogBufferManager::ProducerTLS {
     RingBuffer<PendingLog, 1024> ring;
     bool registered{false};
+
+    ~ProducerTLS() {
+        if (registered) {
+            // Deregister from global list to avoid dangling pointer when thread exits
+            LogBufferManager::getInstance().deregisterProducer(this);
+            registered = false;
+        }
+    }
 };
 
 static thread_local LogBufferManager::ProducerTLS tls_producer;
@@ -218,7 +226,7 @@ void LogBufferManager::initializeThreadPool(size_t numThreads) {
     // Create thread pool
     threadPool_ = std::make_unique<ThreadPool>(numThreads, SIZE_MAX, "LogBufferManager_Pool");
     if (threadPool_) { 
-        LogBufferManager::getInstance().appendTo("LogBufferManagerInternal", std::format("Initialized LogBufferManager thread pool with {} threads", threadPool_->size()), debug::LogContext::Debug);
+        LogBufferManager::getInstance().appendTo("LogBufferManagerInternal", std::format("Initialized LogBufferManager thread pool with {} threads", threadPool_->get_thread_count()), debug::LogContext::Debug);
     }
 }
 
@@ -294,6 +302,13 @@ void LogBufferManager::flusher_loop() {
         }
         std::this_thread::sleep_for(2ms);
     }
+}
+
+// Remove a producer pointer from the list (called from ProducerTLS destructor)
+void LogBufferManager::deregisterProducer(void* producer_ptr) {
+    std::lock_guard<std::mutex> lk(producers_mutex_);
+    auto it = std::remove(producers_.begin(), producers_.end(), producer_ptr);
+    producers_.erase(it, producers_.end());
 }
 
 // Define the thread-local storage flag

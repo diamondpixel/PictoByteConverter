@@ -7,11 +7,8 @@
 #include <memory>
 #include <atomic>
 #include <optional>
-#include "../../Threading/headers/ResourceManager.h" // Include for MemoryBlockId
 #include "NullMutex.h"
-
-// Forward declaration for ResourceManager
-class ResourceManager;
+#include "MemoryTypes.h"
 
 namespace debug {
 
@@ -173,8 +170,8 @@ private:
     std::atomic<std::ptrdiff_t> pendingMessageMemoryDelta_{0}; // Accumulates message memory changes
     
     // Pooled memory blocks
-    ResourceManager::MemoryBlockId structuralMemoryBlock_; // Block for structural memory
-    std::vector<ResourceManager::MemoryBlockId> messageMemoryBlocks_; // Blocks for message memory
+    memory::MemoryBlockId structuralMemoryBlock_; // Block for structural memory
+    std::vector<memory::MemoryBlockId> messageMemoryBlocks_; // Blocks for message memory
 
     static constexpr size_t MESSAGE_MEMORY_FLUSH_THRESHOLD = 4096; // 4KB threshold
     

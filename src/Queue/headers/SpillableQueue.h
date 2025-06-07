@@ -131,6 +131,17 @@ public:
     size_t in_memory_size() const;
 
     /**
+     * @brief Get the number of spilled (on-disk) items currently tracked by the queue
+     *
+     * A task is considered "spilled" when it has previously off-loaded its heavy
+     * resources to a spill file (see Task::hasSpillFile) and therefore only a
+     * lightweight representation resides in memory.
+     *
+     * @return Number of items whose heavy data is spilled to disk.
+     */
+    size_t spilled_size() const;
+
+    /**
      * @brief Get the memory usage of the queue
      *
      * @return The total memory usage of the queue in bytes

@@ -58,7 +58,7 @@ file(GLOB_RECURSE LIB_SOURCES
         "${CMAKE_SOURCE_DIR}/src/FileSystem/*.cpp"
         "${CMAKE_SOURCE_DIR}/src/Queue/*.cpp"
         "${CMAKE_SOURCE_DIR}/src/Image/*.cpp"
-        "${CMAKE_SOURCE_DIR}/src/FileSystem/*.h"
+        "${CMAKE_SOURCE_DIR}/src/Image/*.h"
 )
 
 # Remove main.cpp from the library sources if it was included

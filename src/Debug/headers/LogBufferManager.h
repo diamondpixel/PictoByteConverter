@@ -185,6 +185,9 @@ private:
     LogBuffer& getOrCreateInternal(const std::string& name, size_t capacity, debug::LogContext defaultContext);
     ThreadPool& getThreadPool();
 
+    // Producer management
+    void deregisterProducer(void* producer_ptr);
+
 };
 
 } // namespace debug
